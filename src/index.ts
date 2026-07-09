@@ -968,7 +968,7 @@ class PrismKoishiService {
   }
 
   private targetSender(actor: Sender, targetSubject?: string): Sender | string {
-    const subject = cleanText(targetSubject);
+    const subject = normalizeTargetSubject(targetSubject);
     if (!subject) return actor;
     const denied = this.targetStaffDenied(actor);
     if (denied) return denied;
@@ -1253,6 +1253,12 @@ function parsePositiveInt(
 
 function cleanText(value: any): string {
   return value == null ? "" : String(value).trim();
+}
+
+function normalizeTargetSubject(value: unknown): string {
+  const subject = cleanText(value);
+  const separator = subject.indexOf(":");
+  return separator > 0 ? subject.slice(separator + 1) : subject;
 }
 
 function toNumber(value: any): number {

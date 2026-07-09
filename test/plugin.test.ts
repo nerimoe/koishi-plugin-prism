@@ -281,6 +281,7 @@ describe("applyPrismKoishiPlugin", () => {
       "overwrite <target:user> <amount:number> [reason:text]",
     ]));
     await expect(registered.get("login [target:user]")?.action(adminContext, "target-qq")).resolves.toContain("已为用户");
+    await expect(registered.get("login [target:user]")?.action(adminContext, "onebot:262661418")).resolves.toContain("已为用户 262661418 入场");
     await expect(registered.get("login [target:user]")?.action(playerContext, "target-qq")).resolves.toBe("权限不足");
     await expect(registered.get("add <target:user> <amount:number>")?.action(adminContext, "target-qq", "10")).resolves.toContain("已为用户");
     await expect(registered.get("del <target:user> <amount:number>")?.action(adminContext, "target-qq", "3")).resolves.toContain("已为用户");
@@ -305,6 +306,9 @@ describe("applyPrismKoishiPlugin", () => {
     expect(client.calls).toContainEqual(["checkoutWithOverrideByIdentity", {
       provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",
     }, 30, "Koishi 管理员手动调价"]);
+    expect(client.calls).toContainEqual(["startSessionByIdentity", {
+      provider: "qq", subject: "262661418", autoRegister: true, displayName: "262661418",
+    }, undefined]);
   });
 
   it("denies targeted administrator shortcuts when the staff whitelist is empty", async () => {
