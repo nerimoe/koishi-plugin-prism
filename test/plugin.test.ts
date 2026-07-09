@@ -553,6 +553,8 @@ describe("applyPrismKoishiPlugin", () => {
         settlement: {
           sessionId: "s-1",
           label: "音游区间",
+          startedAt: "2026-06-07T18:00:00.000Z",
+          settledAt: "2026-06-07T19:00:00.000Z",
           subtotal: 0,
           total: 0,
         },
@@ -580,6 +582,9 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).toContain("本次未产生费用");
     expect(result).toContain("余额：9791猫粮");
     expect(result).not.toContain("音游区间");
+    expect(result).not.toContain("游玩时间");
+    expect(result).not.toContain("游玩时段");
+    expect(result).not.toContain("游玩时长");
     expect(result).not.toContain("计费总价：");
     expect(result).not.toContain("扣款后余额：");
   });

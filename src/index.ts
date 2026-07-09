@@ -1085,14 +1085,6 @@ class PrismKoishiService {
     lines.push(title);
     lines.push(await this.resolvePlayerDisplay(sender, playerId));
 
-    const validStarts = sessionPreviews.map((s) => parseDateTime(s?.startedAt)).filter(Boolean) as Date[];
-    const validEnds = sessionPreviews.map((s) => sessionDisplayEnd(s, previewedAt)).filter(Boolean) as Date[];
-    if (validStarts.length > 0) {
-      const overallStart = minDate(validStarts);
-      const overallEnd = validEnds.length > 0 ? maxDate(validEnds) : now(this.config);
-      lines.push(`⏰ 游玩时间：${formatHM(overallStart)}–${formatHM(overallEnd)}`);
-    }
-
     let balance = 0;
     let hasBalance = false;
     for (const holding of assetHoldings) {
@@ -1111,6 +1103,14 @@ class PrismKoishiService {
       lines.push("本次未产生费用");
       if (hasBalance) lines.push(`余额：${formatNumber(balance)}${currency}`);
       return lines.join("\n");
+    }
+
+    const validStarts = sessionPreviews.map((s) => parseDateTime(s?.startedAt)).filter(Boolean) as Date[];
+    const validEnds = sessionPreviews.map((s) => sessionDisplayEnd(s, previewedAt)).filter(Boolean) as Date[];
+    if (validStarts.length > 0) {
+      const overallStart = minDate(validStarts);
+      const overallEnd = validEnds.length > 0 ? maxDate(validEnds) : now(this.config);
+      lines.push(`⏰ 游玩时间：${formatHM(overallStart)}–${formatHM(overallEnd)}`);
     }
 
     for (const sPrev of sessionPreviews) {
