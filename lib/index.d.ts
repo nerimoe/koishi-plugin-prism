@@ -40,7 +40,6 @@ export type PrismKoishiPluginConfig = {
     now?: () => Date;
     baseUrl?: string;
     integrationToken?: string;
-    staffSessionToken?: string;
     client?: any;
 };
 export type KoishiCommandRegistration = {

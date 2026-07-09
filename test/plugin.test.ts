@@ -126,12 +126,12 @@ function createDefaultClient() {
       calls.push(["listDeviceStates"]);
       return { deviceStates: [{ deviceId: "ai-1", label: "maimai", state: { state: "on" } }] };
     },
-    async adjustStaffAssets(playerId: string, adjustments: unknown[]) {
-      calls.push(["adjustStaffAssets", playerId, adjustments]);
+    async adjustAssetsByIdentity(identity: unknown, adjustments: unknown[]) {
+      calls.push(["adjustAssetsByIdentity", identity, adjustments]);
       return { holdings: [] };
     },
-    async checkoutWithOverride(playerId: string, total: number, reason: string) {
-      calls.push(["checkoutWithOverride", playerId, total, reason]);
+    async checkoutWithOverrideByIdentity(identity: unknown, total: number, reason: string) {
+      calls.push(["checkoutWithOverrideByIdentity", identity, total, reason]);
       return { settlement: { total } };
     },
   };
@@ -286,20 +286,25 @@ describe("applyPrismKoishiPlugin", () => {
     await expect(registered.get("del <target:user> <amount:number>")?.action(adminContext, "target-qq", "3")).resolves.toContain("已为用户");
     await expect(registered.get("overwrite <target:user> <amount:number> [reason:text]")?.action(adminContext, "target-qq", "30")).resolves.toContain("已为用户");
 
-    expect(client.calls).toContainEqual(["resolveOrRegisterIdentity", expect.objectContaining({ provider: "qq", subject: "target-qq" })]);
-    expect(client.calls).toContainEqual(["adjustStaffAssets", "player-1", [{
+    expect(client.calls).toContainEqual(["adjustAssetsByIdentity", {
+      provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",
+    }, [{
       assetType: "currency",
       assetCode: "paid",
       quantityDelta: 10,
       reason: "Koishi 管理员增加余额",
     }]]);
-    expect(client.calls).toContainEqual(["adjustStaffAssets", "player-1", [{
+    expect(client.calls).toContainEqual(["adjustAssetsByIdentity", {
+      provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",
+    }, [{
       assetType: "currency",
       assetCode: "paid",
       quantityDelta: -3,
       reason: "Koishi 管理员扣除余额",
     }]]);
-    expect(client.calls).toContainEqual(["checkoutWithOverride", "player-1", 30, "Koishi 管理员手动调价"]);
+    expect(client.calls).toContainEqual(["checkoutWithOverrideByIdentity", {
+      provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",
+    }, 30, "Koishi 管理员手动调价"]);
   });
 
   it("denies targeted administrator shortcuts when the staff whitelist is empty", async () => {

@@ -7,7 +7,6 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   autoRegister: Schema.boolean().default(true).description("是否自动注册"),
   baseUrl: Schema.string().description("PRiSM 后端 API Base URL"),
   integrationToken: Schema.string().role("secret").description("集成 API Token"),
-  staffSessionToken: Schema.string().role("secret").description("Staff 管理 Token (可选)"),
   currencyName: Schema.string().default("猫粮").description("代币名称"),
   defaultDoorDeviceId: Schema.string().default("front-door").description("默认开门设备ID"),
   defaultScanProvider: Schema.string().default("aime").description("默认刷卡提供商"),
@@ -73,7 +72,6 @@ export type PrismKoishiPluginConfig = {
   // Connection parameters
   baseUrl?: string;
   integrationToken?: string;
-  staffSessionToken?: string;
 
   // Optional client injection (mainly for unit tests / mock)
   client?: any;
@@ -292,7 +290,6 @@ class PrismApiClient {
     private readonly config: {
       baseUrl: string;
       integrationToken: string;
-      staffSessionToken?: string;
     },
   ) {}
 
@@ -354,12 +351,6 @@ class PrismApiClient {
     }
   }
 
-  private requireStaffSessionToken(): string {
-    if (!this.config.staffSessionToken) {
-      throw new PrismBotClientError("Staff session token is required for this Bot shortcut.", "STAFF_TOKEN_REQUIRED", 0, {});
-    }
-    return this.config.staffSessionToken;
-  }
 
   private identityBody(identity: any): Record<string, unknown> {
     return {
@@ -492,19 +483,17 @@ class PrismApiClient {
     });
   }
 
-  async adjustStaffAssets(playerId: string, adjustments: unknown[]) {
-    return this.request("POST", "/rpc/staff/players/:playerId/assets/adjustments", {
-      token: this.requireStaffSessionToken(),
-      params: { playerId },
-      body: { adjustments },
+  async adjustAssetsByIdentity(identity: any, adjustments: unknown[]) {
+    return this.request("POST", "/rpc/integration/players/by-identity/assets/adjustments", {
+      token: this.config.integrationToken,
+      body: { ...this.identityBody(identity), adjustments },
     });
   }
 
-  async checkoutWithOverride(playerId: string, total: number, reason: string) {
-    return this.request("POST", "/rpc/staff/players/:playerId/checkout/override", {
-      token: this.requireStaffSessionToken(),
-      params: { playerId },
-      body: { total, reason },
+  async checkoutWithOverrideByIdentity(identity: any, total: number, reason: string) {
+    return this.request("POST", "/rpc/integration/players/by-identity/checkout/override", {
+      token: this.config.integrationToken,
+      body: { ...this.identityBody(identity), total, reason },
     });
   }
 }
@@ -545,7 +534,6 @@ class PrismKoishiService {
       this.client = new PrismApiClient(http, {
         baseUrl: config.baseUrl,
         integrationToken: config.integrationToken,
-        staffSessionToken: config.staffSessionToken,
       });
     }
   }
@@ -597,11 +585,8 @@ class PrismKoishiService {
     return this.withTarget(actor, targetSubject, async (sender) => {
       const amount = Number(rawAmount);
       if (!Number.isFinite(amount) || amount <= 0) return "金额必须大于 0";
-      const player = await this.resolvePlayer(sender);
-      const playerId = String(player.id ?? "");
-      if (!playerId) return "找不到玩家";
       const isAddition = direction === 1;
-      await this.client.adjustStaffAssets(playerId, [{
+      await this.client.adjustAssetsByIdentity(this.identity(sender), [{
         assetType: "currency",
         assetCode: "paid",
         quantityDelta: amount * direction,
@@ -615,11 +600,8 @@ class PrismKoishiService {
     return this.withTarget(actor, targetSubject, async (sender) => {
       const total = Number(rawAmount);
       if (!Number.isFinite(total) || total < 0) return "金额必须为非负数";
-      const player = await this.resolvePlayer(sender);
-      const playerId = String(player.id ?? "");
-      if (!playerId) return "找不到玩家";
       const reason = cleanText(rawReason) || "Koishi 管理员手动调价";
-      await this.client.checkoutWithOverride(playerId, total, reason);
+      await this.client.checkoutWithOverrideByIdentity(this.identity(sender), total, reason);
       return `✅ 已为用户 ${sender.id} 覆盖结账为 ${formatNumber(total)} ${this.config.currencyName}`;
     });
   }

@@ -31,10 +31,9 @@
 | `resolveDisplayName` | `function` | - | 可选。自定义用于获取群内昵称作为玩家注册名的异步逻辑。 |
 | `enableStaffCommands` | `boolean` | `false` | 是否开启管理员快捷指令。 |
 | `staffUserIds` | `string[]` | `[]` | 允许执行管理员快捷指令的平台用户 ID（如 QQ 号）白名单。空列表不授予目标用户操作权限。 |
-| `staffSessionToken` | `string` | - | 管理员写操作所需的 Staff 管理 Token。 |
 | `logoutNotifyUserIds` | `string[]` | `[]` | 结账成功后额外私聊完整账单的平台用户 ID。通知收件人为该列表与 `staffUserIds` 的去重并集。 |
 
-管理员快捷指令必须同时配置 `enableStaffCommands: true`、`staffUserIds` 和 `staffSessionToken`。目标用户参数使用 Koishi 的 `user` 选择器；只有白名单内的管理员可以操作其他用户。
+管理员快捷指令必须同时配置 `enableStaffCommands: true` 与 `staffUserIds`。它们使用现有 `integrationToken` 调用受限的余额调整和立即结账接口；目标用户参数使用 Koishi 的 `user` 选择器，只有白名单内的管理员可以操作其他用户。
 
 ## 📝 机器人指令列表
 
