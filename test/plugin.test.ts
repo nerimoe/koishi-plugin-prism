@@ -206,7 +206,7 @@ describe("applyPrismKoishiPlugin", () => {
     });
     expect(billingResult).toContain("玩家：Tester（QQ：123456）");
     expect(billingResult).toContain("⏰ 游玩时间：");
-    expect(billingResult).toContain("🎮 音游区间");
+    expect(billingResult).toContain("音游区间");
     expect(billingResult).toContain("游玩时长：1小时0分钟｜消费：22猫粮");
     expect(billingResult).toContain("  └ 月卡折扣：-3猫粮");
     expect(billingResult).toContain("计费总价：25猫粮");
@@ -431,7 +431,7 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).toContain("请勿重复发送入场命令");
   });
 
-  it("renders mahjong sessions with 🀄️ and multi-session billing format", async () => {
+  it("renders multi-session billing format with labels as-is", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
@@ -440,7 +440,7 @@ describe("applyPrismKoishiPlugin", () => {
       sessionPreviews: [
         {
           sessionId: "s-1",
-          label: "音游区间",
+          label: "🎮 音游区间",
           startedAt: "2026-06-07T18:00:00.000Z",
           endedAt: "2026-06-07T19:00:00.000Z",
           status: "closed",
@@ -450,7 +450,7 @@ describe("applyPrismKoishiPlugin", () => {
         },
         {
           sessionId: "s-2",
-          label: "大洋化学",
+          label: "🀄️ 大洋化学",
           startedAt: "2026-06-07T19:00:00.000Z",
           endedAt: "2026-06-07T20:00:00.000Z",
           status: "closed",
@@ -468,8 +468,6 @@ describe("applyPrismKoishiPlugin", () => {
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
       currencyName: "猫粮",
-      mahjongTables: "a,b,c:大洋化学=pricing-mahjong",
-      mahjongLabelPrefix: "麻将桌",
       client: client as any,
     };
     applyPrismKoishiPlugin(ctx, config);

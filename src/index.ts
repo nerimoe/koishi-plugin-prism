@@ -924,19 +924,6 @@ class PrismKoishiService {
     return `玩家：${name}（${this.config.provider.toUpperCase()}：${sender.id}）`;
   }
 
-  private mahjongLabels(): Set<string> {
-    const labels = new Set<string>();
-    const prefix = this.config.mahjongLabelPrefix ?? "麻将桌";
-    for (const cfg of this.mahjongTableConfigs().values()) {
-      if (cfg.displayName) labels.add(cfg.displayName);
-      labels.add(`${prefix} ${cfg.tableId}`);
-    }
-    return labels;
-  }
-
-  private sessionEmoji(label: string): string {
-    return this.mahjongLabels().has(label) ? "🀄️" : "🎮";
-  }
 
   private mahjongTableForPlayer(playerId: string): string | null {
     for (const [tableId, state] of this.mahjongTables) {
@@ -1035,7 +1022,7 @@ class PrismKoishiService {
       const status = sPrev?.status ?? "active";
       const sTotal = toNumber(sPrev?.total ?? 0);
       lines.push("");
-      lines.push(`${this.sessionEmoji(label)} ${label}`);
+      lines.push(label);
       if (startDt && endDt) {
         const minutes = Math.floor((endDt.getTime() - startDt.getTime()) / 60_000);
         lines.push(`游玩时段：${formatHM(startDt)}-${formatHM(endDt)}`);
