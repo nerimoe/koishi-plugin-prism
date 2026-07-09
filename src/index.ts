@@ -151,6 +151,17 @@ type ActiveSessionListItem = {
   identities?: Array<{ provider: string; subject: string }>;
 };
 
+type ActivePlayer = {
+  playerId: string;
+  sessions: ActiveSessionListItem[];
+  displayName?: string;
+};
+
+type PlayerGroups = {
+  music: ActivePlayer[];
+  mahjong: Array<{ table: MahjongTableConfig; players: ActivePlayer[] }>;
+};
+
 type DeviceStateItem = {
   deviceId?: string;
   label?: string;
@@ -771,26 +782,17 @@ class PrismKoishiService {
   async listActiveSessions(sender: Sender): Promise<string> {
     const result = (await this.client.listActiveSessions()) as UncheckedRecord;
     const sessions = (result?.sessions ?? []) as ActiveSessionListItem[];
-    if (sessions.length === 0) return "🫥 窝里目前没有玩家呢";
 
-    const lines = [`👥 窝里目前共有 ${sessions.length} 人`];
-    for (const session of sessions) {
-      const identitySubject = findSubjectForSession(session, this.config.provider);
-      let display: string;
-      if (identitySubject) {
-        const platformName = await this.resolvePlatformName(identitySubject);
-        if (platformName) {
-          display = `${platformName} ( ${identitySubject} )`;
-        } else {
-          display = `${session.playerDisplayName || identitySubject} ( ${identitySubject} )`;
-        }
-      } else {
-        display = session.playerDisplayName || session.playerId || "未知玩家";
-      }
-      const timeStr = formatDateTime(session.startedAt);
-      lines.push(`玩家: ${display}\n入场时间: ${timeStr}`);
-    }
-    return lines.join("\n\n");
+    const tableByLabel = new Map(
+      uniqueMahjongConfigs(this.mahjongTableConfigs()).map((table) => [
+        mahjongSessionLabel(table, this.config.mahjongLabelPrefix ?? "麻将桌"),
+        table,
+      ]),
+    );
+    const players = groupSessionsByPlayer(sessions);
+    const groups = await this.buildPlayerGroups(players, tableByLabel);
+    this.mergeWaitingSeats(groups);
+    return formatPlayerGroups(groups, this.config.mahjongTableSize ?? 4);
   }
 
   async listDeviceStates(rawAlias?: string): Promise<string> {
@@ -917,6 +919,62 @@ class PrismKoishiService {
       return (await this.config.resolveDisplayName(subject)) ?? null;
     } catch {
       return null;
+    }
+  }
+
+  private async displayNameForPlayer(player: ActivePlayer): Promise<string> {
+    for (const session of player.sessions) {
+      const subject = findSubjectForSession(session, this.config.provider);
+      if (!subject) continue;
+      const platformName = await this.resolvePlatformName(subject);
+      if (platformName) return platformName;
+      if (session.playerDisplayName) return session.playerDisplayName;
+      return subject;
+    }
+    return player.displayName || player.playerId || "未知玩家";
+  }
+
+  private async buildPlayerGroups(
+    players: Map<string, ActivePlayer>,
+    tableByLabel: Map<string, MahjongTableConfig>,
+  ): Promise<PlayerGroups> {
+    const groups: PlayerGroups = {
+      music: [],
+      mahjong: uniqueMahjongConfigs(this.mahjongTableConfigs()).map((table) => ({ table, players: [] })),
+    };
+    const groupForTable = new Map(groups.mahjong.map((group) => [group.table.tableId, group]));
+
+    for (const player of players.values()) {
+      player.displayName = await this.displayNameForPlayer(player);
+      const table = player.sessions
+        .map((session) => tableByLabel.get(session.label ?? ""))
+        .find((value): value is MahjongTableConfig => Boolean(value));
+      if (table) {
+        groupForTable.get(table.tableId)?.players.push(player);
+      } else {
+        groups.music.push(player);
+      }
+    }
+    return groups;
+  }
+
+  private mergeWaitingSeats(groups: PlayerGroups): void {
+    for (const [tableId, state] of this.mahjongTables) {
+      const group = groups.mahjong.find((candidate) => candidate.table.tableId === tableId);
+      if (!group) continue;
+      for (const seat of state.waiting) {
+        if (group.players.some((player) => player.playerId === seat.playerId)) continue;
+        const existing = [groups.music, ...groups.mahjong.map((candidate) => candidate.players)]
+          .flat()
+          .find((player) => player.playerId === seat.playerId);
+        groups.music = groups.music.filter((player) => player.playerId !== seat.playerId);
+        for (const candidate of groups.mahjong) {
+          if (candidate !== group) {
+            candidate.players = candidate.players.filter((player) => player.playerId !== seat.playerId);
+          }
+        }
+        group.players.push(existing ?? { playerId: seat.playerId, sessions: [], displayName: seat.displayName });
+      }
     }
   }
 
@@ -1147,6 +1205,47 @@ export function parseMahjongTables(value: string, labelPrefix: string): Map<stri
     for (const alias of aliases) tables.set(alias, config);
   }
   return tables;
+}
+
+function uniqueMahjongConfigs(tables: Map<string, MahjongTableConfig>): MahjongTableConfig[] {
+  return [...new Map([...tables.values()].map((table) => [table.tableId, table])).values()];
+}
+
+function mahjongSessionLabel(table: MahjongTableConfig, labelPrefix: string): string {
+  return table.displayName || `${labelPrefix} ${table.tableId}`;
+}
+
+function groupSessionsByPlayer(sessions: readonly ActiveSessionListItem[]): Map<string, ActivePlayer> {
+  const players = new Map<string, ActivePlayer>();
+  for (const session of sessions) {
+    const playerId = session.playerId || findSubjectForSession(session, "") || "";
+    if (!playerId) continue;
+    const player = players.get(playerId) ?? { playerId, sessions: [] };
+    player.sessions.push(session);
+    players.set(playerId, player);
+  }
+  return players;
+}
+
+function formatPlayerGroups(groups: PlayerGroups, tableSize: number): string {
+  const populatedMahjongGroups = groups.mahjong.filter((group) => group.players.length > 0);
+  const total = groups.music.length + populatedMahjongGroups.reduce((sum, group) => sum + group.players.length, 0);
+  if (total === 0) return "🫥 窝里目前没有玩家呢";
+
+  const lines = [`[总计 ${total} 人]`];
+  if (groups.music.length > 0) {
+    lines.push(`🎵 音乐游戏 ( ${groups.music.length}人 )：\n${formatPlayerNames(groups.music)}`);
+  }
+  for (const group of populatedMahjongGroups) {
+    lines.push(
+      `${mahjongSessionLabel(group.table, "麻将桌")} ( ${group.players.length}/${tableSize} )：\n${formatPlayerNames(group.players)}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function formatPlayerNames(players: ActivePlayer[]): string {
+  return players.map((player) => `- ${player.displayName || player.playerId || "未知玩家"}`).join(", ");
 }
 
 function splitOnce(text: string, sep: string): [string, string] {

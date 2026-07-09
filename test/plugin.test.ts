@@ -217,8 +217,8 @@ describe("applyPrismKoishiPlugin", () => {
     expect(billingResult).not.toContain("　｜　");
 
     const listResult = await registered.get("list")?.action({ session: { userId: "123456" } });
-    expect(listResult).toContain("窝里目前共有 1 人");
-    expect(listResult).toContain("2034994588");
+    expect(listResult).toContain("[总计 1 人]");
+    expect(listResult).toContain("Player 296");
   });
 
   it("uses platform display name when resolver is provided", async () => {
@@ -237,7 +237,46 @@ describe("applyPrismKoishiPlugin", () => {
     applyPrismKoishiPlugin(ctx, config);
     const listResult = await registered.get("list")?.action({ session: { userId: "123456" } });
     expect(listResult).toContain("🎀hanahana🎀");
-    expect(listResult).toContain("2034994588");
+  });
+
+  it("groups list by music players and mahjong tables", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const ctx = createMockKoishiContext(registered);
+    const client = createDefaultClient();
+    client.resolveOrRegisterIdentity = async (input: { subject: string }) => ({
+      id: `player-${input.subject}`,
+      displayName: `Player ${input.subject}`,
+    });
+    client.listActiveSessions = async () => ({
+      sessions: [
+        { id: "music-1", playerId: "player-1", playerDisplayName: "Player 1", label: "音游区间", identities: [{ provider: "qq", subject: "1" }] },
+        { id: "music-2", playerId: "player-2", playerDisplayName: "Player 2", label: "音游区间", identities: [{ provider: "qq", subject: "2" }] },
+        { id: "music-3", playerId: "player-3", playerDisplayName: "Player 3", label: "音游区间", identities: [{ provider: "qq", subject: "3" }] },
+        { id: "mahjong-3", playerId: "player-3", playerDisplayName: "Player 3", label: "🀄️ 大洋化学八口麻将机", identities: [{ provider: "qq", subject: "3" }] },
+        { id: "mahjong-4", playerId: "player-4", playerDisplayName: "Player 4", label: "🀄️ 大洋化学八口麻将机", identities: [{ provider: "qq", subject: "4" }] },
+        { id: "music-5", playerId: "player-5", playerDisplayName: "Player 5", label: "音游区间", identities: [{ provider: "qq", subject: "5" }] },
+      ],
+    });
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      mahjongTables: "a,四麻A : 🀄️ 大洋化学八口麻将机 = pricing-mahjong-a",
+      mahjongTableSize: 4,
+      resolveDisplayName: (subject) => `Player ${subject}`,
+      client: client as any,
+    };
+    applyPrismKoishiPlugin(ctx, config);
+
+    await registered.get("上桌 <tableId>")?.action({ session: { userId: "5", senderName: "Player 5" } }, "a");
+    const result = await registered.get("list")?.action({ session: { userId: "1" } });
+
+    expect(result).toContain("[总计 5 人]");
+    expect(result).toContain("🎵 音乐游戏 ( 2人 )：\n- Player 1, - Player 2");
+    expect(result).toContain("🀄️ 大洋化学八口麻将机 ( 3/4 )：\n- Player 3, - Player 4, - Player 5");
+    expect(result).not.toContain("音游区间");
   });
 
   it("shows device states and power commands", async () => {
