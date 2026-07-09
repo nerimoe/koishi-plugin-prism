@@ -212,6 +212,43 @@ describe("applyPrismKoishiPlugin", () => {
     expect(listResult).toContain("Player 296");
   });
 
+  it("quotes command replies and notifies configured logout recipients", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    const broadcasts: Array<[string[], string]> = [];
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      staffUserIds: ["staff-1"],
+      logoutNotifyUserIds: ["staff-1", "audit-1"],
+      client: client as any,
+    });
+    const bot = {
+      async broadcast(userIds: string[], content: string) {
+        broadcasts.push([userIds, content]);
+      },
+    };
+
+    const loginResult = await registered.get("login [target:user]")?.action({
+      session: { userId: "123456", senderName: "Tester", messageId: "message-1", bot },
+    });
+    expect(loginResult).toContain("quote");
+    expect(loginResult).toContain("✅ 入场成功");
+
+    const logoutResult = await registered.get("logout [target:user]")?.action({
+      session: { userId: "123456", senderName: "Tester", messageId: "message-2", bot },
+    });
+    expect(logoutResult).toContain("quote");
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0][0]).toEqual(["staff-1", "audit-1"]);
+    expect(broadcasts[0][1]).toContain("✅ 退场成功 · 结算账单");
+    expect(broadcasts[0][1]).toContain("玩家：player-1（QQ：123456）");
+    expect(broadcasts[0][1]).not.toContain("quote");
+  });
+
   it("registers administrator shortcuts with target authorization and staff writes", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);

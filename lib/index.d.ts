@@ -24,6 +24,7 @@ export type PrismKoishiPluginConfig = {
     currencyName: string;
     enableStaffCommands?: boolean;
     staffUserIds?: string[];
+    logoutNotifyUserIds?: string[];
     mahjongTables?: string;
     mahjongTableSize?: number;
     mahjongLabelPrefix?: string;
@@ -56,6 +57,7 @@ export type KoishiLikeContext = {
 export type KoishiActionContext = {
     session: {
         userId: string;
+        messageId?: string;
         senderId?: string;
         senderName?: string;
         username?: string;
@@ -63,6 +65,7 @@ export type KoishiActionContext = {
             getUser?(id: string): Promise<{
                 name?: string;
             }>;
+            broadcast?(userIds: string[], content: string): Promise<void>;
         };
     };
 };

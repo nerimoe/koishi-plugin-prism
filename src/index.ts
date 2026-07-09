@@ -1,4 +1,4 @@
-import { Schema } from "koishi";
+import { h, Schema } from "koishi";
 
 export const name = "prism";
 
@@ -15,6 +15,7 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   loginSessionLabel: Schema.string().default("音游区间").description("默认入场场次标签 (防重复入场)"),
   enableStaffCommands: Schema.boolean().default(false).description("是否启用管理员指令"),
   staffUserIds: Schema.array(Schema.string()).default([]).description("允许执行管理员指令的平台用户ID列表"),
+  logoutNotifyUserIds: Schema.array(Schema.string()).default([]).description("结账账单私聊通知的平台用户ID列表"),
   powerOffInterval: Schema.number().default(0).description("无人自动关机等待秒数 (0为禁用)"),
   mahjongTables: Schema.string().description("麻将桌配置"),
   mahjongTableSize: Schema.number().default(4).description("麻将桌人数限制"),
@@ -54,6 +55,7 @@ export type PrismKoishiPluginConfig = {
   currencyName: string;
   enableStaffCommands?: boolean;
   staffUserIds?: string[];
+  logoutNotifyUserIds?: string[];
   mahjongTables?: string;
   mahjongTableSize?: number;
   mahjongLabelPrefix?: string;
@@ -94,11 +96,13 @@ export type KoishiLikeContext = {
 export type KoishiActionContext = {
   session: {
     userId: string;
+    messageId?: string;
     senderId?: string;
     senderName?: string;
     username?: string;
     bot?: {
       getUser?(id: string): Promise<{ name?: string }>;
+      broadcast?(userIds: string[], content: string): Promise<void>;
     };
   };
 };
@@ -172,9 +176,11 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     handler: (context: KoishiActionContext, ...args: string[]) => Promise<string> | string,
   ) => async (context: KoishiActionContext, ...args: string[]): Promise<string> => {
     try {
-      return await handler(context, ...args);
+      const message = await handler(context, ...args);
+      return context.session?.messageId ? `${h("quote", { id: context.session.messageId })}${message}` : message;
     } catch (error) {
-      return service.handleCommandError(error);
+      const message = service.handleCommandError(error);
+      return context.session?.messageId ? `${h("quote", { id: context.session.messageId })}${message}` : message;
     }
   };
 
@@ -203,7 +209,7 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
   ));
 
   ctx.command("logout [target:user]", "结算玩家计费场次").action(wrap(async (context, target) =>
-    service.withTarget(await service.sender(context), target, (sender) => service.logout(sender)),
+    service.withTarget(await service.sender(context), target, (sender) => service.logout(sender, context.session?.bot)),
   ));
 
   ctx.command("billing [target:user]", "预览玩家结账费用").action(wrap(async (context, target) =>
@@ -698,7 +704,7 @@ class PrismKoishiService {
     return this.formatCheckoutPreview(result, sender);
   }
 
-  async logout(sender: Sender): Promise<string> {
+  async logout(sender: Sender, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
     const result = (await this.client.confirmCheckoutByIdentity(this.identity(sender))) as UncheckedRecord;
     const settlement = result?.playerSettlement ?? result?.settlement ?? {};
     const records = result?.settlements ?? [];
@@ -727,7 +733,12 @@ class PrismKoishiService {
       adjustments: result?.adjustments ?? [],
       assetHoldings: result?.assetHoldings ?? [],
     };
-    return this.formatCheckoutPreview(synthetic, sender, "✅ 退场成功 · 结算账单");
+    const receipt = await this.formatCheckoutPreview(synthetic, sender, "✅ 退场成功 · 结算账单");
+    const recipients = [...new Set([...(this.config.staffUserIds ?? []), ...(this.config.logoutNotifyUserIds ?? [])])];
+    if (recipients.length > 0 && bot?.broadcast) {
+      await bot.broadcast(recipients, receipt);
+    }
+    return receipt;
   }
 
   async wallet(sender: Sender): Promise<string> {
