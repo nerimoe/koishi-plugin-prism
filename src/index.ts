@@ -1093,6 +1093,26 @@ class PrismKoishiService {
       lines.push(`⏰ 游玩时间：${formatHM(overallStart)}–${formatHM(overallEnd)}`);
     }
 
+    let balance = 0;
+    let hasBalance = false;
+    for (const holding of assetHoldings) {
+      const code = String(holding?.assetCode ?? "").toLowerCase();
+      if (code.includes("paid") || code.includes("free") || code.includes("currency")) {
+        balance += toNumber(holding?.quantity ?? 0);
+        hasBalance = true;
+      }
+    }
+    const hasNonZeroSessionTotal = sessionPreviews.some((session) =>
+      toNumber(session?.total ?? 0) !== 0,
+    );
+    const hasNonZeroAdjustment = hasAdjustmentEntries(adjustments, sessionPreviews);
+    if (!hasNonZeroSessionTotal && !hasNonZeroAdjustment) {
+      lines.push("");
+      lines.push("本次未产生费用");
+      if (hasBalance) lines.push(`余额：${formatNumber(balance)}${currency}`);
+      return lines.join("\n");
+    }
+
     for (const sPrev of sessionPreviews) {
       const label = sPrev?.label || "计时区间";
       const startDt = parseDateTime(sPrev?.startedAt);
@@ -1117,21 +1137,9 @@ class PrismKoishiService {
       }
     }
 
-    let balance = 0;
-    let hasBalance = false;
-    for (const holding of assetHoldings) {
-      const code = String(holding?.assetCode ?? "").toLowerCase();
-      if (code.includes("paid") || code.includes("free") || code.includes("currency")) {
-        balance += toNumber(holding?.quantity ?? 0);
-        hasBalance = true;
-      }
-    }
-
     lines.push("");
     lines.push(`计费总价：${formatNumber(subtotal)}${currency}`);
-    const hasDiscount = (adjustments as UncheckedRecord[]).some((adj) => toNumber(firstDefined(adj ?? {}, "amount", "saved", 0)) !== 0)
-      || sessionPreviews.some((sp) => ((sp?.adjustments ?? []) as UncheckedRecord[]).some((adj) => toNumber(firstDefined(adj ?? {}, "amount", "saved", 0)) !== 0));
-    if (hasDiscount) lines.push(`优惠后价格：${formatNumber(total)}${currency}`);
+    if (hasNonZeroAdjustment) lines.push(`优惠后价格：${formatNumber(total)}${currency}`);
     if (hasBalance) lines.push(`扣款后余额：${formatNumber(balance)}${currency}`);
 
     return lines.join("\n");
@@ -1304,6 +1312,16 @@ function toNumber(value: any): number {
   const asFloat = Number.parseFloat(text);
   if (!Number.isNaN(asFloat)) return asFloat;
   return 0;
+}
+
+function hasAdjustmentEntries(adjustments: unknown, sessionPreviews: UncheckedRecord[]): boolean {
+  return (adjustments as UncheckedRecord[]).some((adjustment) =>
+    toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0)) !== 0,
+  ) || sessionPreviews.some((session) =>
+    ((session?.adjustments ?? []) as UncheckedRecord[]).some((adjustment) =>
+      toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0)) !== 0,
+    ),
+  );
 }
 
 function formatNumber(value: any): string {

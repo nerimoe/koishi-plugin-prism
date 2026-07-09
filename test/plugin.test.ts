@@ -543,6 +543,47 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).toContain("请勿重复发送入场命令");
   });
 
+  it("renders a concise zero-cost checkout receipt", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const ctx = createMockKoishiContext(registered);
+    const client = createDefaultClient();
+    client.confirmCheckoutByIdentity = async () => ({
+      settlement: { playerId: "player-1", subtotal: 0, total: 0 },
+      settlements: [{
+        settlement: {
+          sessionId: "s-1",
+          label: "音游区间",
+          subtotal: 0,
+          total: 0,
+        },
+        chargeItems: [],
+        adjustments: [],
+      }],
+      chargeItems: [],
+      adjustments: [],
+      assetHoldings: [{ assetCode: "paid", quantity: 9791 }],
+    });
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    };
+    applyPrismKoishiPlugin(ctx, config);
+
+    const result = await registered.get("logout")?.action({
+      session: { userId: "123456", senderName: "Tester" },
+    });
+    expect(result).toContain("✅ 退场成功 · 结算账单");
+    expect(result).toContain("本次未产生费用");
+    expect(result).toContain("余额：9791猫粮");
+    expect(result).not.toContain("音游区间");
+    expect(result).not.toContain("计费总价：");
+    expect(result).not.toContain("扣款后余额：");
+  });
+
   it("renders multi-session billing format with labels as-is", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
