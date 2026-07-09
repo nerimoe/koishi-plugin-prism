@@ -186,12 +186,12 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.register(await service.sender(context)),
   ));
 
-  ctx.command("login", "开启当前玩家的计费场次").action(wrap(async (context) =>
-    service.login(await service.sender(context)),
+  ctx.command("login [target:user]", "开启玩家计费场次").action(wrap(async (context, target) =>
+    service.loginForTarget(await service.sender(context), target),
   ));
 
-  ctx.command("入场", "入场 (alias of login)").action(wrap(async (context) =>
-    service.login(await service.sender(context)),
+  ctx.command("入场 [target:user]", "入场").action(wrap(async (context, target) =>
+    service.loginForTarget(await service.sender(context), target),
   ));
 
   ctx.command("mahjong <tableId>", "加入指定麻将桌").action(wrap(async (context, tableId) =>
@@ -206,20 +206,20 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.mahjongLeave(await service.sender(context), tableId),
   ));
 
-  ctx.command("logout", "结算当前玩家的计费场次").action(wrap(async (context) =>
-    service.logout(await service.sender(context)),
+  ctx.command("logout [target:user]", "结算玩家计费场次").action(wrap(async (context, target) =>
+    service.withTarget(await service.sender(context), target, (sender) => service.logout(sender)),
   ));
 
-  ctx.command("billing", "预览当前玩家的结账费用").action(wrap(async (context) =>
-    service.billing(await service.sender(context)),
+  ctx.command("billing [target:user]", "预览玩家结账费用").action(wrap(async (context, target) =>
+    service.withTarget(await service.sender(context), target, (sender) => service.billing(sender)),
   ));
 
-  ctx.command("wallet", "查看当前玩家钱包余额").action(wrap(async (context) =>
-    service.wallet(await service.sender(context)),
+  ctx.command("wallet [target:user]", "查看玩家钱包").action(wrap(async (context, target) =>
+    service.withTarget(await service.sender(context), target, (sender) => service.wallet(sender)),
   ));
 
-  ctx.command("items", "查看当前玩家持有资产").action(wrap(async (context) =>
-    service.items(await service.sender(context)),
+  ctx.command("items [target:user]", "查看玩家资产").action(wrap(async (context, target) =>
+    service.withTarget(await service.sender(context), target, (sender) => service.items(sender)),
   ));
 
   ctx.command("list", "查看当前在线玩家列表").action(wrap(async (context) =>
@@ -230,8 +230,8 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.listDeviceStates(deviceId),
   ));
 
-  ctx.command("history", "查看当前玩家历史场次").action(wrap(async (context) =>
-    service.history(await service.sender(context)),
+  ctx.command("history [target:user]", "查看玩家历史").action(wrap(async (context, target) =>
+    service.withTarget(await service.sender(context), target, (sender) => service.history(sender)),
   ));
 
   ctx.command("lock", "向默认门锁设备发送开门指令").action(wrap(async (context) =>
@@ -257,6 +257,20 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
   ctx.command("redeem <code>", "兑换 PRiSM 礼物码").action(wrap(async (context, code) =>
     service.redeem(await service.sender(context), code),
   ));
+
+  ctx.command("add <target:user> <amount:number>", "增加玩家余额").action(wrap(async (context, target, amount) =>
+    service.adjustTargetBalance(await service.sender(context), target, amount, 1),
+  ));
+
+  ctx.command("del <target:user> <amount:number>", "扣除玩家余额").action(wrap(async (context, target, amount) =>
+    service.adjustTargetBalance(await service.sender(context), target, amount, -1),
+  ));
+
+  ctx.command("overwrite <target:user> <amount:number> [reason:text]", "覆盖结账金额并立即结账").action(
+    wrap(async (context, target, amount, reason) =>
+      service.overwriteTargetCheckout(await service.sender(context), target, amount, reason),
+    ),
+  );
 
   if (config.enableStaffCommands) {
     ctx.command("admin.players", "列出 PRiSM 玩家").action(wrap(async (context) =>
@@ -529,6 +543,22 @@ class PrismApiClient {
       params: { playerId },
     });
   }
+
+  async adjustStaffAssets(playerId: string, adjustments: unknown[]) {
+    return this.request("POST", "/rpc/staff/players/:playerId/assets/adjustments", {
+      token: this.requireStaffSessionToken(),
+      params: { playerId },
+      body: { adjustments },
+    });
+  }
+
+  async checkoutWithOverride(playerId: string, total: number, reason: string) {
+    return this.request("POST", "/rpc/staff/players/:playerId/checkout/override", {
+      token: this.requireStaffSessionToken(),
+      params: { playerId },
+      body: { total, reason },
+    });
+  }
 }
 
 /* ------------------------------- service ----------------------------------- */
@@ -593,9 +623,57 @@ class PrismKoishiService {
     return "注册成功";
   }
 
+  async loginForTarget(actor: Sender, targetSubject?: string): Promise<string> {
+    return this.withTarget(actor, targetSubject, async (sender, isTargeted) => {
+      await this.client.startSessionByIdentity(this.identity(sender), this.loginSessionBody());
+      return isTargeted ? `✅ 已为用户 ${sender.id} 入场成功` : "✅ 入场成功";
+    });
+  }
+
   async login(sender: Sender): Promise<string> {
     await this.client.startSessionByIdentity(this.identity(sender), this.loginSessionBody());
     return "✅ 入场成功";
+  }
+
+  async withTarget(
+    actor: Sender,
+    targetSubject: string | undefined,
+    action: (sender: Sender, isTargeted: boolean) => Promise<string>,
+  ): Promise<string> {
+    const target = this.targetSender(actor, targetSubject);
+    if (typeof target === "string") return target;
+    return action(target, target !== actor);
+  }
+
+  async adjustTargetBalance(actor: Sender, targetSubject: string, rawAmount: string, direction: 1 | -1): Promise<string> {
+    return this.withTarget(actor, targetSubject, async (sender) => {
+      const amount = Number(rawAmount);
+      if (!Number.isFinite(amount) || amount <= 0) return "金额必须大于 0";
+      const player = await this.resolvePlayer(sender);
+      const playerId = String(player.id ?? "");
+      if (!playerId) return "找不到玩家";
+      const isAddition = direction === 1;
+      await this.client.adjustStaffAssets(playerId, [{
+        assetType: "currency",
+        assetCode: "paid",
+        quantityDelta: amount * direction,
+        reason: isAddition ? "Koishi 管理员增加余额" : "Koishi 管理员扣除余额",
+      }]);
+      return `✅ 已为用户 ${sender.id}${isAddition ? "增加" : "扣除"} ${formatNumber(amount)} ${this.config.currencyName}`;
+    });
+  }
+
+  async overwriteTargetCheckout(actor: Sender, targetSubject: string, rawAmount: string, rawReason?: string): Promise<string> {
+    return this.withTarget(actor, targetSubject, async (sender) => {
+      const total = Number(rawAmount);
+      if (!Number.isFinite(total) || total < 0) return "金额必须为非负数";
+      const player = await this.resolvePlayer(sender);
+      const playerId = String(player.id ?? "");
+      if (!playerId) return "找不到玩家";
+      const reason = cleanText(rawReason) || "Koishi 管理员手动调价";
+      await this.client.checkoutWithOverride(playerId, total, reason);
+      return `✅ 已为用户 ${sender.id} 覆盖结账为 ${formatNumber(total)} ${this.config.currencyName}`;
+    });
   }
 
   async mahjongJoin(sender: Sender, rawTableId: string): Promise<string> {
@@ -1026,6 +1104,14 @@ class PrismKoishiService {
       autoRegister: this.config.autoRegister,
       displayName: sender.name || `${this.config.provider.toUpperCase()} ${sender.id}`,
     };
+  }
+
+  private targetSender(actor: Sender, targetSubject?: string): Sender | string {
+    const subject = cleanText(targetSubject);
+    if (!subject) return actor;
+    const denied = this.staffDenied(actor);
+    if (denied) return denied;
+    return { id: subject, name: subject };
   }
 
   private loginSessionBody(): { pricingConfigIds?: string[]; label?: string } | undefined {

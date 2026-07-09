@@ -146,6 +146,14 @@ function createDefaultClient() {
       calls.push(["staffCheckout", playerId]);
       return { settlement: { total: 25 } };
     },
+    async adjustStaffAssets(playerId: string, adjustments: unknown[]) {
+      calls.push(["adjustStaffAssets", playerId, adjustments]);
+      return { holdings: [] };
+    },
+    async checkoutWithOverride(playerId: string, total: number, reason: string) {
+      calls.push(["checkoutWithOverride", playerId, total, reason]);
+      return { settlement: { total } };
+    },
   };
 }
 
@@ -169,31 +177,34 @@ describe("applyPrismKoishiPlugin", () => {
 
     const expected = [
       "register",
-      "login",
-      "入场",
+      "login [target:user]",
+      "入场 [target:user]",
       "mahjong <tableId>",
       "上桌 <tableId>",
       "下桌 <tableId>",
-      "logout",
-      "billing",
-      "wallet",
-      "items",
+      "logout [target:user]",
+      "billing [target:user]",
+      "wallet [target:user]",
+      "items [target:user]",
       "list",
       "show [deviceId]",
-      "history",
+      "history [target:user]",
       "lock",
       "on <deviceId>",
       "off <deviceId>",
       "coin <deviceId> [count]",
       "scan <deviceId> <subject>",
       "redeem <code>",
+      "add <target:user> <amount:number>",
+      "del <target:user> <amount:number>",
+      "overwrite <target:user> <amount:number> [reason:text]",
     ];
     expect([...registered.keys()]).toEqual(expected);
 
-    await expect(registered.get("login")?.action({ session: { userId: "123456", senderName: "Tester" } })).resolves.toContain("✅ 入场成功");
-    await expect(registered.get("wallet")?.action({ session: { userId: "123456" } })).resolves.toContain("100 猫粮");
+    await expect(registered.get("login [target:user]")?.action({ session: { userId: "123456", senderName: "Tester" } })).resolves.toContain("✅ 入场成功");
+    await expect(registered.get("wallet [target:user]")?.action({ session: { userId: "123456" } })).resolves.toContain("100 猫粮");
 
-    const billingResult = await registered.get("billing")?.action({
+    const billingResult = await registered.get("billing [target:user]")?.action({
       session: {
         userId: "123456",
         senderName: "Tester",
@@ -219,6 +230,59 @@ describe("applyPrismKoishiPlugin", () => {
     const listResult = await registered.get("list")?.action({ session: { userId: "123456" } });
     expect(listResult).toContain("[总计 1 人]");
     expect(listResult).toContain("Player 296");
+  });
+
+  it("registers administrator shortcuts with target authorization and staff writes", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const ctx = createMockKoishiContext(registered);
+    const client = createDefaultClient();
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      enableStaffCommands: true,
+      staffUserIds: ["admin"],
+      client: client as any,
+    };
+    const adminContext = { session: { userId: "admin", senderName: "Admin" } };
+    const playerContext = { session: { userId: "player", senderName: "Player" } };
+
+    applyPrismKoishiPlugin(ctx, config);
+
+    expect([...registered.keys()]).toEqual(expect.arrayContaining([
+      "login [target:user]",
+      "入场 [target:user]",
+      "logout [target:user]",
+      "billing [target:user]",
+      "wallet [target:user]",
+      "items [target:user]",
+      "history [target:user]",
+      "add <target:user> <amount:number>",
+      "del <target:user> <amount:number>",
+      "overwrite <target:user> <amount:number> [reason:text]",
+    ]));
+    await expect(registered.get("login [target:user]")?.action(adminContext, "target-qq")).resolves.toContain("已为用户");
+    await expect(registered.get("login [target:user]")?.action(playerContext, "target-qq")).resolves.toBe("权限不足");
+    await expect(registered.get("add <target:user> <amount:number>")?.action(adminContext, "target-qq", "10")).resolves.toContain("已为用户");
+    await expect(registered.get("del <target:user> <amount:number>")?.action(adminContext, "target-qq", "3")).resolves.toContain("已为用户");
+    await expect(registered.get("overwrite <target:user> <amount:number> [reason:text]")?.action(adminContext, "target-qq", "30")).resolves.toContain("已为用户");
+
+    expect(client.calls).toContainEqual(["resolveOrRegisterIdentity", expect.objectContaining({ provider: "qq", subject: "target-qq" })]);
+    expect(client.calls).toContainEqual(["adjustStaffAssets", "player-1", [{
+      assetType: "currency",
+      assetCode: "paid",
+      quantityDelta: 10,
+      reason: "Koishi 管理员增加余额",
+    }]]);
+    expect(client.calls).toContainEqual(["adjustStaffAssets", "player-1", [{
+      assetType: "currency",
+      assetCode: "paid",
+      quantityDelta: -3,
+      reason: "Koishi 管理员扣除余额",
+    }]]);
+    expect(client.calls).toContainEqual(["checkoutWithOverride", "player-1", 30, "Koishi 管理员手动调价"]);
   });
 
   it("uses platform display name when resolver is provided", async () => {
@@ -483,7 +547,7 @@ describe("applyPrismKoishiPlugin", () => {
       },
     };
 
-    await registered.get("login")?.action({ session });
+    await registered.get("login [target:user]")?.action({ session });
 
     expect(getUserCalled).toBe(true);
     // Verify that the resolved nickname was passed in startSessionByIdentity call
@@ -513,7 +577,7 @@ describe("applyPrismKoishiPlugin", () => {
     };
     applyPrismKoishiPlugin(ctx, config);
 
-    await expect(registered.get("login")?.action({ session: { userId: "123456", senderName: "Tester" } })).resolves.toContain("✅ 入场成功");
+    await expect(registered.get("login [target:user]")?.action({ session: { userId: "123456", senderName: "Tester" } })).resolves.toContain("✅ 入场成功");
 
     const startSessionCall = client.calls.find((c) => c[0] === "startSessionByIdentity");
     expect(startSessionCall).toBeDefined();
@@ -538,7 +602,7 @@ describe("applyPrismKoishiPlugin", () => {
     };
     applyPrismKoishiPlugin(ctx, config);
 
-    const result = await registered.get("login")?.action({ session: { userId: "123456", senderName: "Tester" } });
+    const result = await registered.get("login [target:user]")?.action({ session: { userId: "123456", senderName: "Tester" } });
     expect(result).toContain("❌ 您已经处于入场状态");
     expect(result).toContain("请勿重复发送入场命令");
   });
@@ -575,7 +639,7 @@ describe("applyPrismKoishiPlugin", () => {
     };
     applyPrismKoishiPlugin(ctx, config);
 
-    const result = await registered.get("logout")?.action({
+    const result = await registered.get("logout [target:user]")?.action({
       session: { userId: "123456", senderName: "Tester" },
     });
     expect(result).toContain("✅ 退场成功 · 结算账单");
@@ -630,7 +694,7 @@ describe("applyPrismKoishiPlugin", () => {
     };
     applyPrismKoishiPlugin(ctx, config);
 
-    const result = await registered.get("billing")?.action({
+    const result = await registered.get("billing [target:user]")?.action({
       session: {
         userId: "123456",
         senderName: "Tester",
