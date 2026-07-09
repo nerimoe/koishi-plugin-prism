@@ -58,9 +58,10 @@ function createDefaultClient() {
             status: "closed",
             subtotal: 25,
             total: 22,
+            adjustments: [{ label: "月卡折扣", amount: -3 }],
           },
         ],
-        adjustments: [{ amount: -3 }],
+        adjustments: [{ label: "月卡折扣", amount: -3 }],
         assetHoldings: [{ assetCode: "paid", quantity: 100 }],
       };
     },
@@ -203,9 +204,17 @@ describe("applyPrismKoishiPlugin", () => {
         },
       },
     });
+    expect(billingResult).toContain("玩家：Tester（QQ：123456）");
+    expect(billingResult).toContain("⏰ 游玩时间：");
+    expect(billingResult).toContain("🎮 音游区间");
+    expect(billingResult).toContain("游玩时长：1小时0分钟｜消费：22猫粮");
+    expect(billingResult).toContain("  └ 月卡折扣：-3猫粮");
     expect(billingResult).toContain("计费总价：25猫粮");
-    expect(billingResult).toContain("玩家：Tester ( 123456 )");
+    expect(billingResult).toContain("优惠后价格：22猫粮");
+    expect(billingResult).toContain("扣款后余额：100猫粮");
     expect(billingResult).not.toContain("玩家ID：");
+    expect(billingResult).not.toContain("————————————");
+    expect(billingResult).not.toContain("　｜　");
 
     const listResult = await registered.get("list")?.action({ session: { userId: "123456" } });
     expect(listResult).toContain("窝里目前共有 1 人");
@@ -420,5 +429,62 @@ describe("applyPrismKoishiPlugin", () => {
     const result = await registered.get("login")?.action({ session: { userId: "123456", senderName: "Tester" } });
     expect(result).toContain("❌ 您已经处于入场状态");
     expect(result).toContain("请勿重复发送入场命令");
+  });
+
+  it("renders mahjong sessions with 🀄️ and multi-session billing format", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const ctx = createMockKoishiContext(registered);
+    const client = createDefaultClient();
+    client.previewCheckoutByIdentity = async () => ({
+      settlementPreview: { playerId: "player-1", subtotal: 30, total: 30 },
+      sessionPreviews: [
+        {
+          sessionId: "s-1",
+          label: "音游区间",
+          startedAt: "2026-06-07T18:00:00.000Z",
+          endedAt: "2026-06-07T19:00:00.000Z",
+          status: "closed",
+          subtotal: 10,
+          total: 10,
+          adjustments: [],
+        },
+        {
+          sessionId: "s-2",
+          label: "大洋化学",
+          startedAt: "2026-06-07T19:00:00.000Z",
+          endedAt: "2026-06-07T20:00:00.000Z",
+          status: "closed",
+          subtotal: 20,
+          total: 20,
+          adjustments: [],
+        },
+      ],
+      adjustments: [],
+      assetHoldings: [{ assetCode: "paid", quantity: 42 }],
+    });
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      mahjongTables: "a,b,c:大洋化学=pricing-mahjong",
+      mahjongLabelPrefix: "麻将桌",
+      client: client as any,
+    };
+    applyPrismKoishiPlugin(ctx, config);
+
+    const result = await registered.get("billing")?.action({
+      session: {
+        userId: "123456",
+        senderName: "Tester",
+        bot: { async getUser() { return { name: "Tester" }; } },
+      },
+    });
+    expect(result).toContain("🎮 音游区间");
+    expect(result).toContain("🀄️ 大洋化学");
+    expect(result).toContain("计费总价：30猫粮");
+    expect(result).toContain("扣款后余额：42猫粮");
+    expect(result).not.toContain("优惠后价格：");
   });
 });

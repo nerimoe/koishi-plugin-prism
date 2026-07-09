@@ -918,9 +918,24 @@ class PrismKoishiService {
   private async resolvePlayerDisplay(sender: Sender | null, playerId?: string): Promise<string> {
     if (!sender) return playerId || "未知玩家";
     const platformName = await this.resolvePlatformName(sender.id);
-    if (platformName) return `${platformName} ( ${sender.id} )`;
-    const senderName = sender.name && sender.name !== sender.id ? sender.name : playerId;
-    return `${senderName} ( ${sender.id} )`;
+    const name = platformName
+      || (sender.name && sender.name !== sender.id ? sender.name : playerId)
+      || sender.id;
+    return `玩家：${name}（${this.config.provider.toUpperCase()}：${sender.id}）`;
+  }
+
+  private mahjongLabels(): Set<string> {
+    const labels = new Set<string>();
+    const prefix = this.config.mahjongLabelPrefix ?? "麻将桌";
+    for (const cfg of this.mahjongTableConfigs().values()) {
+      if (cfg.displayName) labels.add(cfg.displayName);
+      labels.add(`${prefix} ${cfg.tableId}`);
+    }
+    return labels;
+  }
+
+  private sessionEmoji(label: string): string {
+    return this.mahjongLabels().has(label) ? "🀄️" : "🎮";
   }
 
   private mahjongTableForPlayer(playerId: string): string | null {
@@ -1002,19 +1017,16 @@ class PrismKoishiService {
     const assetHoldings = result?.assetHoldings ?? [];
     const lines: string[] = [];
 
-    const headerParts: string[] = [title];
-    const display = await this.resolvePlayerDisplay(sender, playerId);
-    headerParts.push(`玩家：${display}`);
-    lines.push(headerParts.join("\n"));
+    lines.push(title);
+    lines.push(await this.resolvePlayerDisplay(sender, playerId));
 
     const validStarts = sessionPreviews.map((s) => parseDateTime(s?.startedAt)).filter(Boolean) as Date[];
     const validEnds = sessionPreviews.map((s) => sessionDisplayEnd(s, previewedAt)).filter(Boolean) as Date[];
     if (validStarts.length > 0) {
       const overallStart = minDate(validStarts);
       const overallEnd = validEnds.length > 0 ? maxDate(validEnds) : now(this.config);
-      lines.push(`⏰全场到店时段：${formatHM(overallStart)}–${formatHM(overallEnd)}`);
+      lines.push(`⏰ 游玩时间：${formatHM(overallStart)}–${formatHM(overallEnd)}`);
     }
-    lines.push("");
 
     for (const sPrev of sessionPreviews) {
       const label = sPrev?.label || "计时区间";
@@ -1022,37 +1034,40 @@ class PrismKoishiService {
       const endDt = sessionDisplayEnd(sPrev, previewedAt);
       const status = sPrev?.status ?? "active";
       const sTotal = toNumber(sPrev?.total ?? 0);
-      lines.push(label);
+      lines.push("");
+      lines.push(`${this.sessionEmoji(label)} ${label}`);
       if (startDt && endDt) {
-        lines.push(
-          `游玩时段：${formatHM(startDt)}-${formatHM(endDt)}`,
-        );
-        lines.push(
-          `游玩时长：${formatDurationValue(Math.floor((endDt.getTime() - startDt.getTime()) / 60_000))}　｜　消费：${formatNumber(sTotal)}${currency}`,
-        );
+        const minutes = Math.floor((endDt.getTime() - startDt.getTime()) / 60_000);
+        lines.push(`游玩时段：${formatHM(startDt)}-${formatHM(endDt)}`);
+        lines.push(`游玩时长：${formatDurationValue(minutes)}｜消费：${formatNumber(sTotal)}${currency}`);
       } else if (startDt) {
         lines.push(`入场：${formatHM(startDt)}  （${status === "active" ? "计费中" : "已关闭"}）`);
       }
-      lines.push("");
-    }
-    lines.push("————————————");
-
-    const balanceParts: string[] = [];
-    for (const holding of assetHoldings) {
-      const qty = toNumber(holding?.quantity ?? 0);
-      const code = String(holding?.assetCode ?? "").toLowerCase();
-      if (code.includes("paid") || code.includes("free") || code.includes("currency")) {
-        balanceParts.push(`${formatNumber(qty)}${currency}`);
+      const sessionAdjustments = (sPrev?.adjustments ?? []) as UncheckedRecord[];
+      for (const adj of sessionAdjustments) {
+        const amount = toNumber(firstDefined(adj ?? {}, "amount", "saved", 0));
+        if (amount === 0) continue;
+        const adjLabel = firstDefined(adj ?? {}, "label", "name", "source") ?? "优惠";
+        lines.push(`  └ ${adjLabel}：${formatNumber(amount)}${currency}`);
       }
     }
-    if (balanceParts.length > 0) lines.push(`扣款后余额：${balanceParts.join("＋")}`);
-    lines.push(`计费总价：${formatNumber(subtotal)}${currency}`);
 
-    const hasDiscount = adjustments.some((adj: UncheckedRecord) => {
-      const amount = toNumber(firstDefined(adj ?? {}, "amount", "saved", 0));
-      return amount !== 0;
-    });
+    let balance = 0;
+    let hasBalance = false;
+    for (const holding of assetHoldings) {
+      const code = String(holding?.assetCode ?? "").toLowerCase();
+      if (code.includes("paid") || code.includes("free") || code.includes("currency")) {
+        balance += toNumber(holding?.quantity ?? 0);
+        hasBalance = true;
+      }
+    }
+
+    lines.push("");
+    lines.push(`计费总价：${formatNumber(subtotal)}${currency}`);
+    const hasDiscount = (adjustments as UncheckedRecord[]).some((adj) => toNumber(firstDefined(adj ?? {}, "amount", "saved", 0)) !== 0)
+      || sessionPreviews.some((sp) => ((sp?.adjustments ?? []) as UncheckedRecord[]).some((adj) => toNumber(firstDefined(adj ?? {}, "amount", "saved", 0)) !== 0));
     if (hasDiscount) lines.push(`优惠后价格：${formatNumber(total)}${currency}`);
+    if (hasBalance) lines.push(`扣款后余额：${formatNumber(balance)}${currency}`);
 
     return lines.join("\n");
   }
