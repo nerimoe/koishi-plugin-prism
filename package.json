@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-prism",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "PRiSM Next 计费与设备管理系统的 Koishi 机器人集成插件",
   "main": "./dist-types/index.js",
   "exports": {
@@ -44,6 +44,7 @@
   },
   "scripts": {
     "build": "tsc",
+    "prepare": "tsc",
     "test": "bun test test",
     "typecheck": "tsc -p tsconfig.json"
   }
