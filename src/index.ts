@@ -1066,6 +1066,18 @@ class PrismKoishiService {
 export type Sender = { id: string; name: string };
 
 export function humanReadableBotError(error: PrismBotClientError): string {
+  if (error.code === "DUPLICATE_SESSION_LABEL") {
+    return "❌ 您已经处于入场状态，请勿重复发送入场命令。";
+  }
+  if (error.code === "PLAYER_HAS_NO_UNSETTLED_SESSIONS") {
+    return "您当前没有未结算的账单，无需结账。";
+  }
+  if (error.code === "ACTIVE_SESSION_NOT_FOUND") {
+    return "您当前没有进行中的计费场次。";
+  }
+  if (error.code === "PLAYER_IDENTITY_NOT_FOUND") {
+    return "未找到您的玩家身份，请先注册或绑定账号。";
+  }
   if (error.code === "INSUFFICIENT_BALANCE") {
     return "余额不足，暂时不能结账。请先充值，或由店员在后台改价后再结账。";
   }
