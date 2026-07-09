@@ -915,6 +915,14 @@ class PrismKoishiService {
     }
   }
 
+  private async resolvePlayerDisplay(sender: Sender | null, playerId?: string): Promise<string> {
+    if (!sender) return playerId || "未知玩家";
+    const platformName = await this.resolvePlatformName(sender.id);
+    if (platformName) return `${platformName} ( ${sender.id} )`;
+    const senderName = sender.name && sender.name !== sender.id ? sender.name : playerId;
+    return `${senderName} ( ${sender.id} )`;
+  }
+
   private mahjongTableForPlayer(playerId: string): string | null {
     for (const [tableId, state] of this.mahjongTables) {
       if (state.activeSessions[playerId]) return tableId;
@@ -959,11 +967,11 @@ class PrismKoishiService {
     return null;
   }
 
-  private formatCheckoutPreview(
+  private async formatCheckoutPreview(
     result: UncheckedRecord,
     sender: Sender | null,
     title = "【结算账单】",
-  ): string {
+  ): Promise<string> {
     if (result?.billing && result?.session) {
       return formatLegacyBilling(result, this.config.currencyName);
     }
@@ -995,12 +1003,8 @@ class PrismKoishiService {
     const lines: string[] = [];
 
     const headerParts: string[] = [title];
-    if (playerId) {
-      const identitySuffix = sender ? `（${this.config.provider.toUpperCase()}：${sender.id}）` : "";
-      headerParts.push(`玩家ID：${playerId}${identitySuffix}`);
-    } else if (sender) {
-      headerParts.push(`玩家：${sender.name || sender.id}（${this.config.provider.toUpperCase()}：${sender.id}）`);
-    }
+    const display = await this.resolvePlayerDisplay(sender, playerId);
+    headerParts.push(`玩家：${display}`);
     lines.push(headerParts.join("\n"));
 
     const validStarts = sessionPreviews.map((s) => parseDateTime(s?.startedAt)).filter(Boolean) as Date[];

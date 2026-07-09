@@ -192,9 +192,20 @@ describe("applyPrismKoishiPlugin", () => {
     await expect(registered.get("login")?.action({ session: { userId: "123456", senderName: "Tester" } })).resolves.toContain("✅ 入场成功");
     await expect(registered.get("wallet")?.action({ session: { userId: "123456" } })).resolves.toContain("100 猫粮");
 
-    const billingResult = await registered.get("billing")?.action({ session: { userId: "123456", senderName: "Tester" } });
+    const billingResult = await registered.get("billing")?.action({
+      session: {
+        userId: "123456",
+        senderName: "Tester",
+        bot: {
+          async getUser(id: string) {
+            return id === "123456" ? { name: "Tester" } : { name: "" };
+          },
+        },
+      },
+    });
     expect(billingResult).toContain("计费总价：25猫粮");
-    expect(billingResult).toContain("玩家ID：player-1");
+    expect(billingResult).toContain("玩家：Tester ( 123456 )");
+    expect(billingResult).not.toContain("玩家ID：");
 
     const listResult = await registered.get("list")?.action({ session: { userId: "123456" } });
     expect(listResult).toContain("窝里目前共有 1 人");
