@@ -11,7 +11,7 @@
 * 🀄 **麻将桌位集成**：包含 `/mahjong <tableId>` 以及便捷的 `/上桌` / `/下桌` 控制。`上桌` 仅允许已通过 `login`/`入场` 开启默认入场会话的玩家使用。`list` 会按音乐游戏和麻将桌分组，并对同一玩家的多个计时会话去重；麻将桌显示当前人数和容量。未满桌候座由机器人进程暂存，机器人重启后不会保留。
 * 🔌 **硬件设备状态与电源管理**：可直接在聊天中查看设备状态（`/show`）、远程开启/关闭电源（`/on`、`/off`）、远程投币（`/coin`）和模拟刷卡（`/scan`）。
 * 🎟️ **礼物兑换码**：使用 `/redeem <code>` 兑换系统发放的福利礼包。
-* 🛠️ **管理员高级指令**：允许管理员在聊天中查看玩家（`/admin.players`）、创建新玩家账户（`/admin.create-player`）、充值余额（`/admin.grant-balance`）、手动结账（`/admin.checkout`）以及制作礼包兑换码（`/admin.redeem-code`）。
+* 🛠️ **管理员快捷指令**：允许管理员为指定平台用户增加或扣除余额，并覆盖结账金额后立即结账。
 
 ## ⚙️ 配置说明
 
@@ -29,8 +29,11 @@
 | `defaultScanProvider` | `string` | `"aime"` | 默认模拟刷卡时的读卡器协议提供商（如 `"aime"`）。 |
 | `currencyName` | `string` | `"金币"` | 账户货币在显示时的自定义单位名称。 |
 | `resolveDisplayName` | `function` | - | 可选。自定义用于获取群内昵称作为玩家注册名的异步逻辑。 |
-| `enableStaffCommands` | `boolean` | `false` | 是否开启管理员/店员的高级控制指令。 |
-| `staffUserIds` | `string[]` | `[]` | 允许执行管理员指令的平台用户 ID（如 QQ 号）白名单。 |
+| `enableStaffCommands` | `boolean` | `false` | 是否开启管理员快捷指令。 |
+| `staffUserIds` | `string[]` | `[]` | 允许执行管理员快捷指令的平台用户 ID（如 QQ 号）白名单。空列表不授予目标用户操作权限。 |
+| `staffSessionToken` | `string` | - | 管理员写操作所需的 Staff 管理 Token。 |
+
+管理员快捷指令必须同时配置 `enableStaffCommands: true`、`staffUserIds` 和 `staffSessionToken`。目标用户参数使用 Koishi 的 `user` 选择器；只有白名单内的管理员可以操作其他用户。
 
 ## 📝 机器人指令列表
 
@@ -54,12 +57,11 @@
 * `mahjong <tableId>` / `上桌 <tableId>` - 加入指定麻将桌；仅允许已通过 `login`/`入场` 开启默认入场会话的玩家使用。
 * `下桌 <tableId>` - 离开指定麻将桌。
 
-### 管理员指令 (需在白名单内并开启)
-* `admin.players` - 列出系统内注册的所有玩家。
-* `admin.create-player <displayName>` - 创建一个新的 PRiSM 玩家。
-* `admin.grant-balance <playerId> <amount>` - 为指定玩家发放充值余额。
-* `admin.redeem-code <code> <presentId>` - 快速创建单次使用的兑换码。
-* `admin.checkout <playerId>` - 代替并强制为指定玩家结账。
+### 管理员快捷指令
+启用 `enableStaffCommands`、配置 `staffUserIds` 白名单与 `staffSessionToken` 后可使用：
+* `add <target:user> <amount:number>` - 为目标用户增加余额。
+* `del <target:user> <amount:number>` - 从目标用户扣除余额。
+* `overwrite <target:user> <amount:number> [reason:text]` - 覆盖目标用户本次结账金额，并立即执行结账；未填写原因时使用默认管理员调价原因。
 
 ## 🛠️ 本地开发与构建
 

@@ -115,10 +115,6 @@ const USAGE: Record<string, string> = {
   prism_redeem: "/prism redeem <兑换码>",
   list: "/list",
   show: "/show [设备ID]",
-  staff_create_player: "/prism.admin.create-player <玩家昵称>",
-  staff_grant_balance: "/prism.admin.grant-balance <玩家ID> <金额>",
-  staff_redeem_code: "/prism.admin.redeem-code <兑换码> <礼物ID>",
-  staff_checkout: "/prism.admin.checkout <玩家ID>",
 };
 
 type MahjongSeat = {
@@ -271,24 +267,6 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
       service.overwriteTargetCheckout(await service.sender(context), target, amount, reason),
     ),
   );
-
-  if (config.enableStaffCommands) {
-    ctx.command("admin.players", "列出 PRiSM 玩家").action(wrap(async (context) =>
-      service.staffPlayers(await service.sender(context)),
-    ));
-    ctx.command("admin.create-player <displayName>", "创建 PRiSM 玩家").action(
-      wrap(async (context, displayName) => service.staffCreatePlayer(await service.sender(context), displayName)),
-    );
-    ctx.command("admin.grant-balance <playerId> <amount>", "给指定玩家发放充值余额").action(
-      wrap(async (context, playerId, amount) => service.staffGrantBalance(await service.sender(context), playerId, amount)),
-    );
-    ctx.command("admin.redeem-code <code> <presentId>", "创建单次使用兑换码").action(
-      wrap(async (context, code, presentId) => service.staffRedeemCode(await service.sender(context), code, presentId)),
-    );
-    ctx.command("admin.checkout <playerId>", "替指定玩家结账").action(wrap(async (context, playerId) =>
-      service.staffCheckout(await service.sender(context), playerId),
-    ));
-  }
 
   const intervalMs = (config.powerOffInterval ?? 0) * 1000;
   if (intervalMs > 0 && typeof ctx.setInterval === "function") {
@@ -505,42 +483,6 @@ class PrismApiClient {
   async listDeviceStates() {
     return this.request("GET", "/rpc/integration/device-states", {
       token: this.config.integrationToken,
-    });
-  }
-
-  // Staff commands
-  async listStaffPlayers() {
-    return this.request("GET", "/rpc/staff/players", {
-      token: this.requireStaffSessionToken(),
-    });
-  }
-
-  async createStaffPlayer(displayName: string) {
-    return this.request("POST", "/rpc/staff/players", {
-      token: this.requireStaffSessionToken(),
-      body: { displayName },
-    });
-  }
-
-  async grantStaffAssets(playerId: string, assets: any[]) {
-    return this.request("POST", "/rpc/staff/players/:playerId/adjustments/assets", {
-      token: this.requireStaffSessionToken(),
-      params: { playerId },
-      body: { assets },
-    });
-  }
-
-  async createStaffRedeemCode(input: any) {
-    return this.request("POST", "/rpc/staff/redeem-codes", {
-      token: this.requireStaffSessionToken(),
-      body: input,
-    });
-  }
-
-  async staffCheckout(playerId: string) {
-    return this.request("POST", "/rpc/staff/players/:playerId/settlements/checkout", {
-      token: this.requireStaffSessionToken(),
-      params: { playerId },
     });
   }
 
@@ -892,80 +834,6 @@ class PrismKoishiService {
     return states
       .map((d) => `${d.label || d.deviceId}: ${d.state?.state ?? "unknown"}`)
       .join("\n");
-  }
-
-  async staffPlayers(sender: Sender): Promise<string> {
-    const denied = this.staffDenied(sender);
-    if (denied) return denied;
-    const result = (await this.client.listStaffPlayers()) as UncheckedRecord;
-    const players = (result?.players ?? []) as UncheckedRecord[];
-    if (players.length === 0) return "🫥 窝里目前没有玩家呢";
-    return [
-      `👥 窝里目前共有 ${players.length} 人`,
-      "",
-      ...players.map((p) => {
-        const lines = [`玩家: ${p?.displayName ?? p?.id ?? ""} (${p?.id ?? ""})`];
-        if (p?.status) lines.push(`状态: ${p.status}`);
-        if (p?.walletTotal != null) lines.push(`余额: ${p.walletTotal} ${this.config.currencyName}`);
-        return lines.join("\n");
-      }),
-    ].join("\n");
-  }
-
-  async staffCreatePlayer(sender: Sender, rawDisplayName: string): Promise<string> {
-    const displayName = cleanText(rawDisplayName);
-    if (!displayName) return commandUsage("staff_create_player");
-    const denied = this.staffDenied(sender);
-    if (denied) return denied;
-    const result = (await this.client.createStaffPlayer?.(displayName)) as UncheckedRecord;
-    const player = result?.player ?? {};
-    return `创建成功\n玩家: ${player?.displayName ?? displayName}\nID: ${player?.id ?? ""}`;
-  }
-
-  async staffGrantBalance(sender: Sender, rawPlayerId: string, rawAmount: string): Promise<string> {
-    const playerId = cleanText(rawPlayerId);
-    const amount = cleanText(rawAmount);
-    if (!playerId || !amount) return commandUsage("staff_grant_balance");
-    const denied = this.staffDenied(sender);
-    if (denied) return denied;
-    await this.client.grantStaffAssets?.(playerId, [
-      {
-        assetType: "currency",
-        assetCode: "paid",
-        amount: Number(amount),
-        mergeStrategy: "stack",
-        activeAt: null,
-        expiresAt: null,
-      },
-    ]);
-    return `✅ 已为玩家 ${playerId} 发放 ${amount} ${this.config.currencyName}`;
-  }
-
-  async staffRedeemCode(sender: Sender, rawCode: string, rawPresentId: string): Promise<string> {
-    const code = cleanText(rawCode);
-    const presentId = cleanText(rawPresentId);
-    if (!code || !presentId) return commandUsage("staff_redeem_code");
-    const denied = this.staffDenied(sender);
-    if (denied) return denied;
-    const result = (await this.client.createStaffRedeemCode?.({
-      code,
-      presentId,
-      activeAt: null,
-      expiresAt: null,
-      maxUseCount: 1,
-    })) as UncheckedRecord;
-    const redeemCode = result?.redeemCode?.code ?? code;
-    return `成功生成 1 个兑换码:\n${redeemCode}`;
-  }
-
-  async staffCheckout(sender: Sender, rawPlayerId: string): Promise<string> {
-    const playerId = cleanText(rawPlayerId);
-    if (!playerId) return commandUsage("staff_checkout");
-    const denied = this.staffDenied(sender);
-    if (denied) return denied;
-    const result = (await this.client.staffCheckout?.(playerId)) as UncheckedRecord;
-    const settlement = result?.settlement ?? {};
-    return `\n✅ 已为用户 ${playerId} 退场\n消费: ${formatNumber(settlement?.total ?? 0)} ${this.config.currencyName}`;
   }
 
   async autoPowerOffLoop(): Promise<void> {

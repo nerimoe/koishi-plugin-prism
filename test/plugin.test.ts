@@ -107,10 +107,6 @@ function createDefaultClient() {
       calls.push(["redeemCodeByIdentity", input, code]);
       return { holdings: [{ assetName: "Coupon", quantity: 1 }] };
     },
-    async listStaffPlayers() {
-      calls.push(["listStaffPlayers"]);
-      return { players: [{ id: "player-1", displayName: "Neri", status: "active", walletTotal: 100 }] };
-    },
     async listActiveSessions() {
       calls.push(["listActiveSessions"]);
       return {
@@ -129,22 +125,6 @@ function createDefaultClient() {
     async listDeviceStates() {
       calls.push(["listDeviceStates"]);
       return { deviceStates: [{ deviceId: "ai-1", label: "maimai", state: { state: "on" } }] };
-    },
-    async createStaffPlayer(displayName: string) {
-      calls.push(["createStaffPlayer", displayName]);
-      return { player: { id: "player-new", displayName } };
-    },
-    async grantStaffAssets(playerId: string, grants: any[]) {
-      calls.push(["grantStaffAssets", playerId, grants]);
-      return { holdings: [] };
-    },
-    async createStaffRedeemCode(input: unknown) {
-      calls.push(["createStaffRedeemCode", input]);
-      return { redeemCode: { id: "code-1", code: "PRISM-2026" } };
-    },
-    async staffCheckout(playerId: string) {
-      calls.push(["staffCheckout", playerId]);
-      return { settlement: { total: 25 } };
     },
     async adjustStaffAssets(playerId: string, adjustments: unknown[]) {
       calls.push(["adjustStaffAssets", playerId, adjustments]);
@@ -488,7 +468,7 @@ describe("applyPrismKoishiPlugin", () => {
     expect(leaveResult).toContain("已离开");
   });
 
-  it("registers and runs staff admin commands when enabled", async () => {
+  it("does not register legacy admin commands", () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
@@ -503,27 +483,7 @@ describe("applyPrismKoishiPlugin", () => {
       client: client as any,
     };
     applyPrismKoishiPlugin(ctx, config);
-    const adminNames = [...registered.keys()].filter((name) => name.startsWith("admin."));
-    expect(adminNames).toEqual([
-      "admin.players",
-      "admin.create-player <displayName>",
-      "admin.grant-balance <playerId> <amount>",
-      "admin.redeem-code <code> <presentId>",
-      "admin.checkout <playerId>",
-    ]);
-    await expect(registered.get("admin.players")?.action({ session: { userId: "admin" } })).resolves.toContain("Neri");
-    await expect(
-      registered.get("admin.create-player <displayName>")?.action({ session: { userId: "admin" } }, "Mika"),
-    ).resolves.toContain("player-new");
-    await expect(
-      registered.get("admin.grant-balance <playerId> <amount>")?.action({ session: { userId: "admin" } }, "player-1", "100"),
-    ).resolves.toContain("发放");
-    await expect(
-      registered.get("admin.redeem-code <code> <presentId>")?.action({ session: { userId: "admin" } }, "PRISM-2026", "present-1"),
-    ).resolves.toContain("PRISM-2026");
-    await expect(
-      registered.get("admin.checkout <playerId>")?.action({ session: { userId: "admin" } }, "player-1"),
-    ).resolves.toContain("25");
+    expect([...registered.keys()].some((name) => name.startsWith("admin."))).toBe(false);
   });
 
   it("denies staff commands when not enabled", async () => {
