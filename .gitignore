@@ -12,7 +12,6 @@ node_modules/
 jspm_packages/
 
 # Compiler outputs
-dist-types/
 dist/
 
 # OS metadata
