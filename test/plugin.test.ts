@@ -325,4 +325,43 @@ describe("applyPrismKoishiPlugin", () => {
     const adminNames = [...registered.keys()].filter((name) => name.startsWith("admin."));
     expect(adminNames).toEqual([]);
   });
+
+  it("fetches platform nickname via bot.getUser during login", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const ctx = createMockKoishiContext(registered);
+    const client = createDefaultClient();
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq",
+      autoRegister: true,
+      client: client as any,
+    };
+    applyPrismKoishiPlugin(ctx, config);
+
+    let getUserCalled = false;
+    const session = {
+      userId: "qq-user-123",
+      bot: {
+        async getUser(id: string) {
+          if (id === "qq-user-123") {
+            getUserCalled = true;
+            return { name: "Dynamic QQ Nickname" };
+          }
+          return { name: "" };
+        },
+      },
+    };
+
+    await registered.get("login")?.action({ session });
+
+    expect(getUserCalled).toBe(true);
+    // Verify that the resolved nickname was passed in startSessionByIdentity call
+    const startSessionCall = client.calls.find((c) => c[0] === "startSessionByIdentity");
+    expect(startSessionCall).toBeDefined();
+    expect(startSessionCall[1]).toEqual({
+      provider: "qq",
+      subject: "qq-user-123",
+      autoRegister: true,
+      displayName: "Dynamic QQ Nickname",
+    });
+  });
 });

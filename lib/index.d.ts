@@ -58,6 +58,12 @@ export type KoishiActionContext = {
         userId: string;
         senderId?: string;
         senderName?: string;
+        username?: string;
+        bot?: {
+            getUser?(id: string): Promise<{
+                name?: string;
+            }>;
+        };
     };
 };
 export declare function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKoishiPluginConfig): void;

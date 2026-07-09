@@ -93,6 +93,10 @@ export type KoishiActionContext = {
     userId: string;
     senderId?: string;
     senderName?: string;
+    username?: string;
+    bot?: {
+      getUser?(id: string): Promise<{ name?: string }>;
+    };
   };
 };
 
@@ -165,47 +169,47 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
   };
 
   ctx.command("register", "绑定或注册当前平台用户到 PRiSM").action(wrap(async (context) =>
-    service.register(service.sender(context)),
+    service.register(await service.sender(context)),
   ));
 
-  ctx.command("login", "开启当前玩家的计费场次").action(async (context) =>
-    service.login(service.sender(context)),
-  );
+  ctx.command("login", "开启当前玩家的计费场次").action(wrap(async (context) =>
+    service.login(await service.sender(context)),
+  ));
 
   ctx.command("入场", "入场 (alias of login)").action(wrap(async (context) =>
-    service.login(service.sender(context)),
+    service.login(await service.sender(context)),
   ));
 
   ctx.command("mahjong <tableId>", "加入指定麻将桌").action(wrap(async (context, tableId) =>
-    service.mahjongJoin(service.sender(context), tableId),
+    service.mahjongJoin(await service.sender(context), tableId),
   ));
 
   ctx.command("上桌 <tableId>", "加入指定麻将桌").action(wrap(async (context, tableId) =>
-    service.mahjongJoin(service.sender(context), tableId),
+    service.mahjongJoin(await service.sender(context), tableId),
   ));
 
   ctx.command("下桌 <tableId>", "离开指定麻将桌").action(wrap(async (context, tableId) =>
-    service.mahjongLeave(service.sender(context), tableId),
+    service.mahjongLeave(await service.sender(context), tableId),
   ));
 
   ctx.command("logout", "结算当前玩家的计费场次").action(wrap(async (context) =>
-    service.logout(service.sender(context)),
+    service.logout(await service.sender(context)),
   ));
 
   ctx.command("billing", "预览当前玩家的结账费用").action(wrap(async (context) =>
-    service.billing(service.sender(context)),
+    service.billing(await service.sender(context)),
   ));
 
   ctx.command("wallet", "查看当前玩家钱包余额").action(wrap(async (context) =>
-    service.wallet(service.sender(context)),
+    service.wallet(await service.sender(context)),
   ));
 
   ctx.command("items", "查看当前玩家持有资产").action(wrap(async (context) =>
-    service.items(service.sender(context)),
+    service.items(await service.sender(context)),
   ));
 
   ctx.command("list", "查看当前在线玩家列表").action(wrap(async (context) =>
-    service.listActiveSessions(service.sender(context)),
+    service.listActiveSessions(await service.sender(context)),
   ));
 
   ctx.command("show [deviceId]", "查看设备电源状态").action(wrap(async (context, deviceId) =>
@@ -213,48 +217,48 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
   ));
 
   ctx.command("history", "查看当前玩家历史场次").action(wrap(async (context) =>
-    service.history(service.sender(context)),
+    service.history(await service.sender(context)),
   ));
 
   ctx.command("lock", "向默认门锁设备发送开门指令").action(wrap(async (context) =>
-    service.lock(service.sender(context)),
+    service.lock(await service.sender(context)),
   ));
 
   ctx.command("on <deviceId>", "请求启动指定设备电源").action(wrap(async (context, deviceId) =>
-    service.powerOn(service.sender(context), deviceId),
+    service.powerOn(await service.sender(context), deviceId),
   ));
 
   ctx.command("off <deviceId>", "请求关闭指定设备电源").action(wrap(async (context, deviceId) =>
-    service.powerOff(service.sender(context), deviceId),
+    service.powerOff(await service.sender(context), deviceId),
   ));
 
   ctx.command("coin <deviceId> [count]", "请求向指定设备投币").action(
-    wrap(async (context, deviceId, count) => service.coin(service.sender(context), deviceId, count)),
+    wrap(async (context, deviceId, count) => service.coin(await service.sender(context), deviceId, count)),
   );
 
   ctx.command("scan <deviceId> <subject>", "请求指定设备模拟刷卡").action(
-    wrap(async (context, deviceId, subject) => service.scan(service.sender(context), deviceId, subject)),
+    wrap(async (context, deviceId, subject) => service.scan(await service.sender(context), deviceId, subject)),
   );
 
   ctx.command("redeem <code>", "兑换 PRiSM 礼物码").action(wrap(async (context, code) =>
-    service.redeem(service.sender(context), code),
+    service.redeem(await service.sender(context), code),
   ));
 
   if (config.enableStaffCommands) {
     ctx.command("admin.players", "列出 PRiSM 玩家").action(wrap(async (context) =>
-      service.staffPlayers(service.sender(context)),
+      service.staffPlayers(await service.sender(context)),
     ));
     ctx.command("admin.create-player <displayName>", "创建 PRiSM 玩家").action(
-      wrap(async (context, displayName) => service.staffCreatePlayer(service.sender(context), displayName)),
+      wrap(async (context, displayName) => service.staffCreatePlayer(await service.sender(context), displayName)),
     );
     ctx.command("admin.grant-balance <playerId> <amount>", "给指定玩家发放充值余额").action(
-      wrap(async (context, playerId, amount) => service.staffGrantBalance(service.sender(context), playerId, amount)),
+      wrap(async (context, playerId, amount) => service.staffGrantBalance(await service.sender(context), playerId, amount)),
     );
     ctx.command("admin.redeem-code <code> <presentId>", "创建单次使用兑换码").action(
-      wrap(async (context, code, presentId) => service.staffRedeemCode(service.sender(context), code, presentId)),
+      wrap(async (context, code, presentId) => service.staffRedeemCode(await service.sender(context), code, presentId)),
     );
     ctx.command("admin.checkout <playerId>", "替指定玩家结账").action(wrap(async (context, playerId) =>
-      service.staffCheckout(service.sender(context), playerId),
+      service.staffCheckout(await service.sender(context), playerId),
     ));
   }
 
@@ -554,9 +558,19 @@ class PrismKoishiService {
     }
   }
 
-  sender(context: KoishiActionContext): Sender {
+  async sender(context: KoishiActionContext): Promise<Sender> {
     const id = context.session?.senderId || context.session?.userId || "";
-    const name = context.session?.senderName || id;
+    let name = id;
+    try {
+      if (context.session?.bot?.getUser) {
+        const user = await context.session.bot.getUser(id);
+        if (user?.name) {
+          name = user.name;
+        }
+      }
+    } catch {
+      name = context.session?.username || context.session?.senderName || id;
+    }
     return { id, name };
   }
 
