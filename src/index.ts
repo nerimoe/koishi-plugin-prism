@@ -1109,7 +1109,7 @@ class PrismKoishiService {
   private targetSender(actor: Sender, targetSubject?: string): Sender | string {
     const subject = cleanText(targetSubject);
     if (!subject) return actor;
-    const denied = this.staffDenied(actor);
+    const denied = this.targetStaffDenied(actor);
     if (denied) return denied;
     return { id: subject, name: subject };
   }
@@ -1130,6 +1130,13 @@ class PrismKoishiService {
     if (!this.config.enableStaffCommands) return "员工命令未启用";
     const allowed = this.config.staffUserIds ?? [];
     if (allowed.length > 0 && !allowed.includes(sender.id)) return "权限不足";
+    return null;
+  }
+
+  private targetStaffDenied(sender: Sender): string | null {
+    if (!this.config.enableStaffCommands) return "员工命令未启用";
+    const allowed = this.config.staffUserIds ?? [];
+    if (!allowed.includes(sender.id)) return "权限不足";
     return null;
   }
 

@@ -285,6 +285,27 @@ describe("applyPrismKoishiPlugin", () => {
     expect(client.calls).toContainEqual(["checkoutWithOverride", "player-1", 30, "Koishi 管理员手动调价"]);
   });
 
+  it("denies targeted administrator shortcuts when the staff whitelist is empty", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const ctx = createMockKoishiContext(registered);
+    const client = createDefaultClient();
+
+    applyPrismKoishiPlugin(ctx, {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      enableStaffCommands: true,
+      staffUserIds: [],
+      client: client as any,
+    });
+
+    await expect(
+      registered.get("login [target:user]")?.action({ session: { userId: "unlisted-admin" } }, "target-qq"),
+    ).resolves.toBe("权限不足");
+  });
+
   it("uses platform display name when resolver is provided", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
