@@ -1465,3 +1465,10 @@ function findSubjectForSession(session: ActiveSessionListItem, provider: string)
   if (qq) return qq.subject;
   return identities[0].subject ?? null;
 }
+
+export default {
+  name,
+  Config,
+  ConfigSchema: Config,
+  apply,
+};
