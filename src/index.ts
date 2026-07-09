@@ -597,6 +597,11 @@ class PrismKoishiService {
 
     const player = await this.resolvePlayer(sender);
     const playerId = String(player.id ?? "");
+    const activeResult = (await this.client.listActiveSessions()) as UncheckedRecord;
+    const activeSessions = (activeResult.sessions ?? []) as ActiveSessionListItem[];
+    if (!this.hasEntrySession(playerId, activeSessions)) {
+      return "请先入场后再上桌。";
+    }
     const existing = this.mahjongTableForPlayer(playerId);
     if (existing) return `你已经在 ${existing} 桌了。`;
 
@@ -939,6 +944,13 @@ class PrismKoishiService {
 
   private async resolvePlayer(sender: Sender): Promise<UncheckedRecord> {
     return (await this.client.resolveOrRegisterIdentity(this.identity(sender))) as UncheckedRecord;
+  }
+
+  private hasEntrySession(playerId: string, sessions: readonly ActiveSessionListItem[]): boolean {
+    const label = this.config.loginSessionLabel?.trim();
+    return sessions.some((session) =>
+      session.playerId === playerId && (label ? session.label === label : true),
+    );
   }
 
   private identity(sender: Sender): IdentityInput {

@@ -267,6 +267,31 @@ describe("applyPrismKoishiPlugin", () => {
     expect(redeemResult).toContain("兑换成功");
   });
 
+  it("rejects mahjong seating before the player enters", async () => {
+    const client = createDefaultClient();
+    client.listActiveSessions = async () => ({ sessions: [] });
+    const registered = new Map<string, RegisteredCommand>();
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      mahjongTables: "a,四麻A : 🀄️ M.LEAGUE联名比赛专用机 = pricing-mahjong-a",
+      mahjongTableSize: 4,
+      client: client as any,
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
+
+    await expect(
+      registered.get("上桌 <tableId>")?.action(
+        { session: { userId: "2034994588", senderName: "hanahana" } },
+        "a",
+      ),
+    ).resolves.toContain("请先入场");
+    expect(client.calls.filter((call) => call[0] === "startSessionByIdentity")).toHaveLength(0);
+  });
+
   it("registers and runs mahjong commands", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
