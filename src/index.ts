@@ -792,7 +792,11 @@ class PrismKoishiService {
     const players = groupSessionsByPlayer(sessions);
     const groups = await this.buildPlayerGroups(players, tableByLabel);
     this.mergeWaitingSeats(groups);
-    return formatPlayerGroups(groups, this.config.mahjongTableSize ?? 4);
+    return formatPlayerGroups(
+      groups,
+      this.config.mahjongTableSize ?? 4,
+      this.config.mahjongLabelPrefix ?? "麻将桌",
+    );
   }
 
   async listDeviceStates(rawAlias?: string): Promise<string> {
@@ -923,15 +927,19 @@ class PrismKoishiService {
   }
 
   private async displayNameForPlayer(player: ActivePlayer): Promise<string> {
+    let identitySubject: string | undefined;
     for (const session of player.sessions) {
       const subject = findSubjectForSession(session, this.config.provider);
       if (!subject) continue;
+      identitySubject ??= subject;
       const platformName = await this.resolvePlatformName(subject);
       if (platformName) return platformName;
-      if (session.playerDisplayName) return session.playerDisplayName;
-      return subject;
     }
-    return player.displayName || player.playerId || "未知玩家";
+    return player.sessions.find((session) => session.playerDisplayName)?.playerDisplayName
+      || identitySubject
+      || player.displayName
+      || player.playerId
+      || "未知玩家";
   }
 
   private async buildPlayerGroups(
@@ -1227,7 +1235,7 @@ function groupSessionsByPlayer(sessions: readonly ActiveSessionListItem[]): Map<
   return players;
 }
 
-function formatPlayerGroups(groups: PlayerGroups, tableSize: number): string {
+function formatPlayerGroups(groups: PlayerGroups, tableSize: number, mahjongLabelPrefix: string): string {
   const populatedMahjongGroups = groups.mahjong.filter((group) => group.players.length > 0);
   const total = groups.music.length + populatedMahjongGroups.reduce((sum, group) => sum + group.players.length, 0);
   if (total === 0) return "🫥 窝里目前没有玩家呢";
@@ -1238,10 +1246,15 @@ function formatPlayerGroups(groups: PlayerGroups, tableSize: number): string {
   }
   for (const group of populatedMahjongGroups) {
     lines.push(
-      `${mahjongSessionLabel(group.table, "麻将桌")} ( ${group.players.length}/${tableSize} )：\n${formatPlayerNames(group.players)}`,
+      `${formatMahjongTableLabel(group.table, mahjongLabelPrefix)} ( ${group.players.length}/${tableSize} )：\n${formatPlayerNames(group.players)}`,
     );
   }
   return lines.join("\n");
+}
+
+function formatMahjongTableLabel(table: MahjongTableConfig, labelPrefix: string): string {
+  const label = mahjongSessionLabel(table, labelPrefix);
+  return table.displayName ? label : `🀄️ ${label}`;
 }
 
 function formatPlayerNames(players: ActivePlayer[]): string {

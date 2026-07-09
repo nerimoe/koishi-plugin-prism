@@ -279,6 +279,54 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).not.toContain("音游区间");
   });
 
+  it("uses the configured mahjong prefix when rendering fallback table labels", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.listActiveSessions = async () => ({
+      sessions: [
+        { id: "mahjong-1", playerId: "player-1", playerDisplayName: "Player 1", label: "牌桌 a", identities: [{ provider: "qq", subject: "1" }] },
+      ],
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      mahjongTables: "a = pricing-mahjong-a",
+      mahjongLabelPrefix: "牌桌",
+      client: client as any,
+    });
+
+    const result = await registered.get("list")?.action({ session: { userId: "1" } });
+
+    expect(result).toContain("🀄️ 牌桌 a ( 1/4 )：\n- Player 1");
+  });
+
+  it("uses a later session backend name after an earlier identity fallback", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.listActiveSessions = async () => ({
+      sessions: [
+        { id: "music-1", playerId: "player-1", label: "音游区间", identities: [{ provider: "qq", subject: "first-subject" }] },
+        { id: "music-2", playerId: "player-1", playerDisplayName: "Later backend name", label: "音游区间" },
+      ],
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const result = await registered.get("list")?.action({ session: { userId: "1" } });
+
+    expect(result).toContain("- Later backend name");
+    expect(result).not.toContain("- first-subject");
+  });
+
   it("shows device states and power commands", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
