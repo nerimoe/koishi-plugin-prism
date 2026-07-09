@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { applyPrismKoishiPlugin, type PrismKoishiPluginConfig } from "../src";
+import { applyPrismKoishiPlugin, PrismBotClientError, type PrismKoishiPluginConfig } from "../src";
 
 type RegisteredCommand = {
   description: string;
@@ -363,5 +363,51 @@ describe("applyPrismKoishiPlugin", () => {
       autoRegister: true,
       displayName: "Dynamic QQ Nickname",
     });
+  });
+
+  it("passes configured loginSessionLabel in the login request body", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const ctx = createMockKoishiContext(registered);
+    const client = createDefaultClient();
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq",
+      autoRegister: true,
+      loginPricingConfigIds: ["pricing-music-standard"],
+      loginSessionLabel: "自定义标签",
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    };
+    applyPrismKoishiPlugin(ctx, config);
+
+    await expect(registered.get("login")?.action({ session: { userId: "123456", senderName: "Tester" } })).resolves.toContain("✅ 入场成功");
+
+    const startSessionCall = client.calls.find((c) => c[0] === "startSessionByIdentity");
+    expect(startSessionCall).toBeDefined();
+    expect(startSessionCall[2]).toEqual({ pricingConfigIds: ["pricing-music-standard"], label: "自定义标签" });
+  });
+
+  it("prevents duplicate login when backend reports DUPLICATE_SESSION_LABEL", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const ctx = createMockKoishiContext(registered);
+    const client = createDefaultClient();
+    client.startSessionByIdentity = async () => {
+      throw new PrismBotClientError("Player already has an active session with label '音游区间'.", "DUPLICATE_SESSION_LABEL", 409, {});
+    };
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq",
+      autoRegister: true,
+      loginSessionLabel: "音游区间",
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    };
+    applyPrismKoishiPlugin(ctx, config);
+
+    const result = await registered.get("login")?.action({ session: { userId: "123456", senderName: "Tester" } });
+    expect(result).toContain("❌ 您已经处于入场状态");
+    expect(result).toContain("请勿重复发送入场命令");
   });
 });

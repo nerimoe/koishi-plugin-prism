@@ -24,7 +24,7 @@
 | `provider` | `string` | `"qq"` | 当前绑定的账号提供商平台名称（如 `"qq"`，`"discord"`）。 |
 | `autoRegister` | `boolean` | `true` | 当玩家未注册时，是否在首次操作（如入场/查钱包）时自动在 PRiSM 中创建新玩家。 |
 | `loginPricingConfigIds` | `string[]` | `[]` | 默认入场计费规则 ID 列表。 |
-| `loginSessionLabel` | `string` | - | 默认入场会话的备注文本（如 `"音游区间"`）。 |
+| `loginSessionLabel` | `string` | `"音游区间"` | 默认入场会话的标签文本。后端会按该标签对同一玩家的活跃会话去重，重复入场会被拒绝并提示。留空则不启用去重。 |
 | `defaultDoorDeviceId` | `string` | - | 默认门锁设备的 ID，用于开门指令。 |
 | `defaultScanProvider` | `string` | `"aime"` | 默认模拟刷卡时的读卡器协议提供商（如 `"aime"`）。 |
 | `currencyName` | `string` | `"金币"` | 账户货币在显示时的自定义单位名称。 |
