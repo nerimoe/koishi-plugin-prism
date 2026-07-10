@@ -168,8 +168,9 @@ describe("applyPrismKoishiPlugin", () => {
       "login [target:user]",
       "入场 [target:user]",
       "mahjong <tableId>",
-      "上桌 <tableId>",
-      "下桌 <tableId>",
+      "上桌 [tableId]",
+      "下桌",
+      "麻将列表",
       "logout [target:user]",
       "billing [target:user]",
       "wallet [target:user]",
@@ -389,12 +390,16 @@ describe("applyPrismKoishiPlugin", () => {
     };
     applyPrismKoishiPlugin(ctx, config);
 
-    await expect(registered.get("上桌 <tableId>")?.action({ session: { userId: "5", senderName: "Player 5" } }, "a")).resolves.toContain("已经开始计费");
+    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "5", senderName: "Player 5" } }, "a")).resolves.toContain("正在游玩中");
     const result = await registered.get("list")?.action({ session: { userId: "1" } });
 
     expect(result).toContain("[总计 5 人]");
     expect(result).toContain("音游区间 ( 3人 )：\n- Player 1, - Player 2, - Player 5");
     expect(result).toContain("🀄️ 大洋化学八口麻将机 ( 2/4 )：\n- Player 3, - Player 4");
+
+    const machineList = await registered.get("麻将列表")?.action({ session: { userId: "1" } });
+    expect(machineList).toContain("🀄️ 麻将机列表（1 台）");
+    expect(machineList).toContain("🀄️ 大洋化学八口麻将机｜别名：a、四麻A｜游玩中 2/4");
   });
 
   it("groups players by their newest non-music session label", async () => {
@@ -510,7 +515,7 @@ describe("applyPrismKoishiPlugin", () => {
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
 
     await expect(
-      registered.get("上桌 <tableId>")?.action(
+      registered.get("上桌 [tableId]")?.action(
         { session: { userId: "2034994588", senderName: "hanahana" } },
         "a",
       ),
@@ -534,11 +539,17 @@ describe("applyPrismKoishiPlugin", () => {
     };
     applyPrismKoishiPlugin(ctx, config);
 
-    const joinResult = await registered.get("上桌 <tableId>")?.action({ session: { userId: "2034994588", senderName: "hanahana" } }, "a");
+    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588", senderName: "hanahana" } }, "不存在")).resolves.toContain("未找到麻将桌「不存在」");
+    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588", senderName: "hanahana" } })).resolves.toContain("请指定麻将桌");
+    const joinResult = await registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588", senderName: "hanahana" } }, "a");
     expect(joinResult).toContain("已加入 🀄️ M.LEAGUE联名比赛专用机");
     expect(joinResult).toContain("1/4 人");
 
-    const leaveResult = await registered.get("下桌 <tableId>")?.action({ session: { userId: "2034994588", senderName: "hanahana" } }, "a");
+    const machineList = await registered.get("麻将列表")?.action({ session: { userId: "2034994588" } });
+    expect(machineList).toContain("🀄️ 麻将机列表（1 台）");
+    expect(machineList).toContain("🀄️ M.LEAGUE联名比赛专用机｜别名：a、四麻A｜等位 1/4");
+
+    const leaveResult = await registered.get("下桌")?.action({ session: { userId: "2034994588", senderName: "hanahana" } });
     expect(leaveResult).toContain("已离开");
   });
 
@@ -550,14 +561,14 @@ describe("applyPrismKoishiPlugin", () => {
       mahjongTables: "a : 大洋化学 = pricing-mahjong-a", mahjongTableSize: 1, client: client as any,
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
-    await registered.get("上桌 <tableId>")?.action({ session: { userId: "2034994588" } }, "a");
+    await registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588" } }, "a");
     client.listActiveSessions = async () => ({ sessions: [{ id: "music-session", playerId: "player-1", label: "音游区间", identities: [{ provider: "qq", subject: "2034994588" }] }] });
-    await expect(registered.get("上桌 <tableId>")?.action({ session: { userId: "2034994588" } }, "a")).resolves.toContain("大洋化学已满，麻将计费已开始");
+    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588" } }, "a")).resolves.toContain("大洋化学已满，麻将计费已开始");
 
     const recovered = new Map<string, RegisteredCommand>();
     client.listActiveSessions = async () => ({ sessions: [{ id: "mahjong-session", playerId: "player-1", label: "大洋化学", identities: [{ provider: "qq", subject: "2034994588" }] }] });
     applyPrismKoishiPlugin(createMockKoishiContext(recovered), config);
-    await expect(recovered.get("下桌 <tableId>")?.action({ session: { userId: "2034994588" } }, "a")).resolves.toContain("已离开 大洋化学");
+    await expect(recovered.get("下桌")?.action({ session: { userId: "2034994588" } })).resolves.toContain("已离开 大洋化学");
     expect(client.calls).toContainEqual(["stopSessionByIdentity", expect.anything(), "mahjong-session"]);
   });
 

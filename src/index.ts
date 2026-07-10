@@ -117,7 +117,8 @@ const LOCAL_TZ_OFFSET_MINUTES = 8 * 60;
 
 const USAGE: Record<string, string> = {
   mahjong_join: "/上桌 <桌号>",
-  mahjong_leave: "/下桌 <桌号>",
+  mahjong_leave: "/下桌",
+  mahjong_list: "/麻将列表",
   prism_on: "/prism on <设备ID>",
   prism_off: "/prism off <设备ID|all>",
   prism_coin: "/prism coin <设备ID> [数量]",
@@ -205,12 +206,16 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.mahjongJoin(await service.sender(context), tableId),
   ));
 
-  ctx.command("上桌 <tableId>", "加入指定麻将桌").action(wrap(async (context, tableId) =>
+  ctx.command("上桌 [tableId]", "加入指定麻将桌").action(wrap(async (context, tableId) =>
     service.mahjongJoin(await service.sender(context), tableId),
   ));
 
-  ctx.command("下桌 <tableId>", "离开指定麻将桌").action(wrap(async (context, tableId) =>
-    service.mahjongLeave(await service.sender(context), tableId),
+  ctx.command("下桌", "离开当前所在麻将桌").action(wrap(async (context) =>
+    service.mahjongLeave(await service.sender(context)),
+  ));
+
+  ctx.command("麻将列表", "查看麻将机状态与别名").action(wrap(async () =>
+    service.listMahjongTables(),
   ));
 
   ctx.command("logout [target:user]", "结算玩家计费场次").action(wrap(async (context, target) =>
@@ -614,9 +619,9 @@ class PrismKoishiService {
 
   async mahjongJoin(sender: Sender, rawTableId: string): Promise<string> {
     const tableId = cleanText(rawTableId);
-    if (!tableId) return commandUsage("mahjong_join");
+    if (!tableId) return "请指定麻将桌，例如 /上桌 a；可先使用 /麻将列表 查看可用桌位。";
     const tableConfig = this.mahjongTableConfigs().get(tableId);
-    if (!tableConfig) return `找不到 ${tableId} 桌的麻将计费配置。`;
+    if (!tableConfig) return `未找到麻将桌「${tableId}」。可先使用 /麻将列表 查看可用桌位。`;
     const tableKey = tableConfig.tableId;
     const tableSubject = tableConfig.displayName || `${tableKey} 桌`;
 
@@ -629,12 +634,12 @@ class PrismKoishiService {
       return "请先入场后再上桌。";
     }
     const existing = this.mahjongTableForPlayer(playerId);
-    if (existing) return `你已经在 ${existing} 桌了。`;
+    if (existing) return `你已经在 ${existing}，无需重复上桌。`;
 
     const state = this.mahjongTables.get(tableKey) ?? { waiting: [], activeSessions: {} };
     this.mahjongTables.set(tableKey, state);
     if (Object.keys(state.activeSessions).length > 0) {
-      return `${tableSubject}已经开始计费，请先等当前这一桌结束。`;
+      return `「${tableSubject}」正在游玩中（${Object.keys(state.activeSessions).length}/${this.config.mahjongTableSize ?? 4}），请等待本局结束后再上桌。`;
     }
 
     state.waiting.push({
@@ -664,19 +669,17 @@ class PrismKoishiService {
     return `${tableSubject}已满，麻将计费已开始。`;
   }
 
-  async mahjongLeave(sender: Sender, rawTableId: string): Promise<string> {
-    const tableId = cleanText(rawTableId);
-    if (!tableId) return commandUsage("mahjong_leave");
-    const tableConfig = this.mahjongTableConfigs().get(tableId);
-    const tableKey = tableConfig?.tableId ?? tableId;
-    const tableSubject = tableConfig?.displayName || `${tableId} 桌`;
+  async mahjongLeave(sender: Sender): Promise<string> {
     const activeResult = (await this.client.listActiveSessions()) as UncheckedRecord;
     this.syncMahjongTableStates((activeResult.sessions ?? []) as ActiveSessionListItem[]);
-    const state = this.mahjongTables.get(tableKey);
-    if (!state) return `你不在 ${tableSubject}。`;
-
     const player = await this.resolvePlayer(sender);
     const playerId = String(player.id ?? "");
+    const tableKey = this.mahjongTableForPlayer(playerId);
+    if (!tableKey) return "你当前未在任何麻将桌上。";
+    const tableConfig = uniqueMahjongConfigs(this.mahjongTableConfigs()).find((table) => table.tableId === tableKey);
+    const tableSubject = tableConfig?.displayName || tableKey;
+    const state = this.mahjongTables.get(tableKey);
+    if (!state) return "你当前未在任何麻将桌上。";
     const waitingBefore = state.waiting.length;
     state.waiting = state.waiting.filter((seat) => seat.playerId !== playerId);
     if (state.waiting.length !== waitingBefore) {
@@ -684,10 +687,30 @@ class PrismKoishiService {
     }
 
     const sessionId = state.activeSessions[playerId];
-    if (!sessionId) return `你不在 ${tableSubject}。`;
+    if (!sessionId) return "你当前未在任何麻将桌上。";
     delete state.activeSessions[playerId];
     await this.client.stopSessionByIdentity(this.identity(sender), sessionId);
     return `已离开 ${tableSubject}，麻将计费已停止。`;
+  }
+
+  async listMahjongTables(): Promise<string> {
+    const activeResult = (await this.client.listActiveSessions()) as UncheckedRecord;
+    this.syncMahjongTableStates((activeResult.sessions ?? []) as ActiveSessionListItem[]);
+    const tableSize = this.config.mahjongTableSize ?? 4;
+    const tables = uniqueMahjongConfigs(this.mahjongTableConfigs());
+    if (tables.length === 0) return "当前没有配置任何麻将机。";
+    const lines = [`🀄️ 麻将机列表（${tables.length} 台）`];
+    for (const table of tables) {
+      const state = this.mahjongTables.get(table.tableId) ?? { waiting: [], activeSessions: {} };
+      const activeCount = Object.keys(state.activeSessions).length;
+      const waitingCount = state.waiting.length;
+      const statuses = [
+        ...(activeCount > 0 ? [`游玩中 ${activeCount}/${tableSize}`] : []),
+        ...(waitingCount > 0 ? [`等位 ${waitingCount}/${tableSize}`] : []),
+      ];
+      lines.push(`- ${table.displayName}｜别名：${table.aliases.length > 0 ? table.aliases.join("、") : "无"}｜${statuses.join("；") || "空闲"}`);
+    }
+    return lines.join("\n");
   }
 
   async billing(sender: Sender): Promise<string> {
