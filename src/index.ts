@@ -156,8 +156,7 @@ type ActivePlayer = {
 };
 
 type PlayerGroups = {
-  music: ActivePlayer[];
-  mahjong: Array<{ table: MahjongTableConfig; players: ActivePlayer[] }>;
+  groups: Array<{ label: string; table?: MahjongTableConfig; players: ActivePlayer[] }>;
 };
 
 type DeviceStateItem = {
@@ -890,40 +889,45 @@ class PrismKoishiService {
     players: Map<string, ActivePlayer>,
     tableByLabel: Map<string, MahjongTableConfig>,
   ): Promise<PlayerGroups> {
-    const groups: PlayerGroups = {
-      music: [],
-      mahjong: uniqueMahjongConfigs(this.mahjongTableConfigs()).map((table) => ({ table, players: [] })),
-    };
-    const groupForTable = new Map(groups.mahjong.map((group) => [group.table.tableId, group]));
+    const groups: PlayerGroups = { groups: [] };
+    const groupByLabel = new Map<string, PlayerGroups["groups"][number]>();
+    const musicLabel = this.config.loginSessionLabel?.trim() || "音游区间";
 
     for (const player of players.values()) {
       player.displayName = await this.displayNameForPlayer(player);
-      const table = player.sessions
-        .map((session) => tableByLabel.get(session.label ?? ""))
-        .find((value): value is MahjongTableConfig => Boolean(value));
-      if (table) {
-        groupForTable.get(table.tableId)?.players.push(player);
-      } else {
-        groups.music.push(player);
+      const nonMusic = player.sessions.filter((session) => Boolean(session.label) && session.label !== musicLabel);
+      const source = nonMusic.length > 0 ? nonMusic : player.sessions;
+      const selected = source.reduce((latest, session) =>
+        !latest || sessionStartedAt(session) > sessionStartedAt(latest) ? session : latest,
+      undefined as ActiveSessionListItem | undefined);
+      const label = selected?.label || musicLabel;
+      let group = groupByLabel.get(label);
+      if (!group) {
+        group = { label, table: tableByLabel.get(label), players: [] };
+        groupByLabel.set(label, group);
+        groups.groups.push(group);
       }
+      group.players.push(player);
     }
     return groups;
   }
 
   private mergeWaitingSeats(groups: PlayerGroups): void {
     for (const [tableId, state] of this.mahjongTables) {
-      const group = groups.mahjong.find((candidate) => candidate.table.tableId === tableId);
-      if (!group) continue;
+      const table = this.mahjongTableConfigs().get(tableId);
+      if (!table) continue;
+      const label = mahjongSessionLabel(table, this.config.mahjongLabelPrefix ?? "麻将桌");
+      let group = groups.groups.find((candidate) => candidate.label === label);
+      if (!group) {
+        group = { label, table, players: [] };
+        groups.groups.push(group);
+      }
       for (const seat of state.waiting) {
         if (group.players.some((player) => player.playerId === seat.playerId)) continue;
-        const existing = [groups.music, ...groups.mahjong.map((candidate) => candidate.players)]
-          .flat()
+        const existing = groups.groups.flatMap((candidate) => candidate.players)
           .find((player) => player.playerId === seat.playerId);
-        groups.music = groups.music.filter((player) => player.playerId !== seat.playerId);
-        for (const candidate of groups.mahjong) {
-          if (candidate !== group) {
-            candidate.players = candidate.players.filter((player) => player.playerId !== seat.playerId);
-          }
+        for (const candidate of groups.groups) {
+          if (candidate !== group) candidate.players = candidate.players.filter((player) => player.playerId !== seat.playerId);
         }
         group.players.push(existing ?? { playerId: seat.playerId, sessions: [], displayName: seat.displayName });
       }
@@ -1233,19 +1237,22 @@ function groupSessionsByPlayer(sessions: readonly ActiveSessionListItem[]): Map<
   return players;
 }
 
+function sessionStartedAt(session: ActiveSessionListItem): number {
+  const value = Date.parse(session.startedAt ?? "");
+  return Number.isFinite(value) ? value : 0;
+}
+
 function formatPlayerGroups(groups: PlayerGroups, tableSize: number, mahjongLabelPrefix: string): string {
-  const populatedMahjongGroups = groups.mahjong.filter((group) => group.players.length > 0);
-  const total = groups.music.length + populatedMahjongGroups.reduce((sum, group) => sum + group.players.length, 0);
+  const populatedGroups = groups.groups.filter((group) => group.players.length > 0);
+  const total = new Set(populatedGroups.flatMap((group) => group.players.map((player) => player.playerId))).size;
   if (total === 0) return "🫥 窝里目前没有玩家呢";
 
   const lines = [`[总计 ${total} 人]`];
-  if (groups.music.length > 0) {
-    lines.push(`🎵 音乐游戏 ( ${groups.music.length}人 )：\n${formatPlayerNames(groups.music)}\n`);
-  }
-  for (const group of populatedMahjongGroups) {
-    lines.push(
-      `${formatMahjongTableLabel(group.table, mahjongLabelPrefix)} ( ${group.players.length}/${tableSize} )：\n${formatPlayerNames(group.players)}`,
-    );
+  for (const group of populatedGroups) {
+    const heading = group.table
+      ? `${formatMahjongTableLabel(group.table, mahjongLabelPrefix)} ( ${group.players.length}/${tableSize} )`
+      : `${group.label} ( ${group.players.length}人 )`;
+    lines.push(`${heading}：\n${formatPlayerNames(group.players)}`);
   }
   return lines.join("\n");
 }

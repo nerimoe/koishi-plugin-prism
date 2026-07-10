@@ -385,9 +385,29 @@ describe("applyPrismKoishiPlugin", () => {
     const result = await registered.get("list")?.action({ session: { userId: "1" } });
 
     expect(result).toContain("[总计 5 人]");
-    expect(result).toContain("🎵 音乐游戏 ( 3人 )：\n- Player 1, - Player 2, - Player 5");
+    expect(result).toContain("音游区间 ( 3人 )：\n- Player 1, - Player 2, - Player 5");
     expect(result).toContain("🀄️ 大洋化学八口麻将机 ( 2/4 )：\n- Player 3, - Player 4");
-    expect(result).not.toContain("音游区间");
+  });
+
+  it("groups players by their newest non-music session label", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.listActiveSessions = async () => ({
+      sessions: [
+        { id: "music-1", playerId: "music", playerDisplayName: "Music", label: "音游区间", startedAt: "2026-07-10T10:00:00.000Z" },
+        { id: "music-2", playerId: "room", playerDisplayName: "Room", label: "音游区间", startedAt: "2026-07-10T10:00:00.000Z" },
+        { id: "room-1", playerId: "room", playerDisplayName: "Room", label: "包间", startedAt: "2026-07-10T11:00:00.000Z" },
+        { id: "room-2", playerId: "room", playerDisplayName: "Room", label: "活动区", startedAt: "2026-07-10T12:00:00.000Z" },
+      ],
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+      loginSessionLabel: "音游区间", client: client as any,
+    });
+    const result = await registered.get("list")?.action({ session: { userId: "music" } });
+    expect(result).toContain("音游区间 ( 1人 )：\n- Music");
+    expect(result).toContain("活动区 ( 1人 )：\n- Room");
+    expect(result).not.toContain("包间 ( 1人 )");
   });
 
   it("uses the configured mahjong prefix when rendering fallback table labels", async () => {
