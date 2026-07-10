@@ -1277,7 +1277,7 @@ function formatPlayerGroups(groups: PlayerGroups, tableSize: number, mahjongLabe
     const heading = group.table
       ? `${formatMahjongTableLabel(group.table, mahjongLabelPrefix)} ( ${group.players.length}/${tableSize} )`
       : `${group.label} ( ${group.players.length}人 )`;
-    lines.push(`${heading}：\n${formatPlayerNames(group.players)}`);
+    lines.push(`\n${heading}：\n${formatPlayerNames(group.players)}`);
   }
   return lines.join("\n");
 }
