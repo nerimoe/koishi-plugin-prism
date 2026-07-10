@@ -381,12 +381,12 @@ describe("applyPrismKoishiPlugin", () => {
     };
     applyPrismKoishiPlugin(ctx, config);
 
-    await registered.get("上桌 <tableId>")?.action({ session: { userId: "5", senderName: "Player 5" } }, "a");
+    await expect(registered.get("上桌 <tableId>")?.action({ session: { userId: "5", senderName: "Player 5" } }, "a")).resolves.toContain("已经开始计费");
     const result = await registered.get("list")?.action({ session: { userId: "1" } });
 
     expect(result).toContain("[总计 5 人]");
-    expect(result).toContain("🎵 音乐游戏 ( 2人 )：\n- Player 1, - Player 2");
-    expect(result).toContain("🀄️ 大洋化学八口麻将机 ( 3/4 )：\n- Player 3, - Player 4, - Player 5");
+    expect(result).toContain("🎵 音乐游戏 ( 3人 )：\n- Player 1, - Player 2, - Player 5");
+    expect(result).toContain("🀄️ 大洋化学八口麻将机 ( 2/4 )：\n- Player 3, - Player 4");
     expect(result).not.toContain("音游区间");
   });
 
@@ -512,6 +512,25 @@ describe("applyPrismKoishiPlugin", () => {
 
     const leaveResult = await registered.get("下桌 <tableId>")?.action({ session: { userId: "2034994588", senderName: "hanahana" } }, "a");
     expect(leaveResult).toContain("已离开");
+  });
+
+  it("synchronizes mahjong state from backend active sessions", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+      mahjongTables: "a : 大洋化学 = pricing-mahjong-a", mahjongTableSize: 1, client: client as any,
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
+    await registered.get("上桌 <tableId>")?.action({ session: { userId: "2034994588" } }, "a");
+    client.listActiveSessions = async () => ({ sessions: [{ id: "music-session", playerId: "player-1", label: "音游区间", identities: [{ provider: "qq", subject: "2034994588" }] }] });
+    await expect(registered.get("上桌 <tableId>")?.action({ session: { userId: "2034994588" } }, "a")).resolves.toContain("大洋化学已满，麻将计费已开始");
+
+    const recovered = new Map<string, RegisteredCommand>();
+    client.listActiveSessions = async () => ({ sessions: [{ id: "mahjong-session", playerId: "player-1", label: "大洋化学", identities: [{ provider: "qq", subject: "2034994588" }] }] });
+    applyPrismKoishiPlugin(createMockKoishiContext(recovered), config);
+    await expect(recovered.get("下桌 <tableId>")?.action({ session: { userId: "2034994588" } }, "a")).resolves.toContain("已离开 大洋化学");
+    expect(client.calls).toContainEqual(["stopSessionByIdentity", expect.anything(), "mahjong-session"]);
   });
 
   it("does not register legacy admin commands", () => {

@@ -68,7 +68,7 @@ export type PrismKoishiPluginConfig = {
   resolveDisplayName?: (subject: string) => Promise<string | null | undefined> | string | null | undefined;
   /** Get a stable current ISO timestamp; mainly for tests. */
   now?: () => Date;
-  
+
   // Connection parameters
   baseUrl?: string;
   integrationToken?: string;
@@ -291,7 +291,7 @@ class PrismApiClient {
       baseUrl: string;
       integrationToken: string;
     },
-  ) {}
+  ) { }
 
   private get headers() {
     return {
@@ -619,6 +619,7 @@ class PrismKoishiService {
     const playerId = String(player.id ?? "");
     const activeResult = (await this.client.listActiveSessions()) as UncheckedRecord;
     const activeSessions = (activeResult.sessions ?? []) as ActiveSessionListItem[];
+    this.syncMahjongTableStates(activeSessions);
     if (!this.hasEntrySession(playerId, activeSessions)) {
       return "请先入场后再上桌。";
     }
@@ -664,6 +665,8 @@ class PrismKoishiService {
     const tableConfig = this.mahjongTableConfigs().get(tableId);
     const tableKey = tableConfig?.tableId ?? tableId;
     const tableSubject = tableConfig?.displayName || `${tableId} 桌`;
+    const activeResult = (await this.client.listActiveSessions()) as UncheckedRecord;
+    this.syncMahjongTableStates((activeResult.sessions ?? []) as ActiveSessionListItem[]);
     const state = this.mahjongTables.get(tableKey);
     if (!state) return `你不在 ${tableSubject}。`;
 
@@ -796,6 +799,7 @@ class PrismKoishiService {
   async listActiveSessions(sender: Sender): Promise<string> {
     const result = (await this.client.listActiveSessions()) as UncheckedRecord;
     const sessions = (result?.sessions ?? []) as ActiveSessionListItem[];
+    this.syncMahjongTableStates(sessions);
 
     const tableByLabel = new Map(
       uniqueMahjongConfigs(this.mahjongTableConfigs()).map((table) => [
@@ -946,6 +950,32 @@ class PrismKoishiService {
 
   private mahjongTableConfigs(): Map<string, MahjongTableConfig> {
     return parseMahjongTables(this.config.mahjongTables ?? "", this.config.mahjongLabelPrefix ?? "麻将桌");
+  }
+
+  private syncMahjongTableStates(sessions: readonly ActiveSessionListItem[]): void {
+    const tables = uniqueMahjongConfigs(this.mahjongTableConfigs());
+    const tableByLabel = new Map(tables.map((table) => [
+      mahjongSessionLabel(table, this.config.mahjongLabelPrefix ?? "麻将桌"),
+      table,
+    ]));
+    const activeByTable = new Map<string, Record<string, string>>();
+    for (const session of sessions) {
+      const table = tableByLabel.get(session.label ?? "");
+      const playerId = String(session.playerId ?? "");
+      const sessionId = String(session.id ?? "");
+      if (!table || !playerId || !sessionId) continue;
+      const active = activeByTable.get(table.tableId) ?? {};
+      active[playerId] = sessionId;
+      activeByTable.set(table.tableId, active);
+    }
+    for (const table of tables) {
+      const state = this.mahjongTables.get(table.tableId) ?? { waiting: [], activeSessions: {} };
+      state.activeSessions = activeByTable.get(table.tableId) ?? {};
+      state.waiting = state.waiting.filter((seat) => !state.activeSessions[seat.playerId]);
+      if (state.waiting.length > 0 || Object.keys(state.activeSessions).length > 0 || this.mahjongTables.has(table.tableId)) {
+        this.mahjongTables.set(table.tableId, state);
+      }
+    }
   }
 
   private async resolvePlayer(sender: Sender): Promise<UncheckedRecord> {
@@ -1210,7 +1240,7 @@ function formatPlayerGroups(groups: PlayerGroups, tableSize: number, mahjongLabe
 
   const lines = [`[总计 ${total} 人]`];
   if (groups.music.length > 0) {
-    lines.push(`🎵 音乐游戏 ( ${groups.music.length}人 )：\n${formatPlayerNames(groups.music)}`);
+    lines.push(`🎵 音乐游戏 ( ${groups.music.length}人 )：\n${formatPlayerNames(groups.music)}\n`);
   }
   for (const group of populatedMahjongGroups) {
     lines.push(
