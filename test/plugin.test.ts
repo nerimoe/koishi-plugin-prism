@@ -262,6 +262,29 @@ describe("applyPrismKoishiPlugin", () => {
     expect(broadcasts[0][1]).not.toContain("quote");
   });
 
+  it("coalesces concurrent logout commands for the same player", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    let confirmations = 0;
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    client.confirmCheckoutByIdentity = async () => {
+      confirmations++;
+      await pending;
+      return { settlement: { playerId: "player-1", subtotal: 10, total: 10 }, settlements: [], assetHoldings: [] };
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮", client: client as any,
+    });
+    const logout = registered.get("logout [target:user]")!.action;
+    const first = logout({ session: { userId: "123456", senderName: "Tester" } });
+    const second = logout({ session: { userId: "123456", senderName: "Tester" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(confirmations).toBe(1);
+    release();
+    expect(await first).toBe(await second);
+  });
+
   it("registers administrator shortcuts with target authorization and staff writes", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);

@@ -521,6 +521,7 @@ class PrismApiClient {
 
 class PrismKoishiService {
   private readonly mahjongTables = new Map<string, MahjongTableState>();
+  private readonly logoutInFlight = new Map<string, Promise<string>>();
   private readonly client: any;
 
   constructor(ctx: KoishiLikeContext, private readonly config: PrismKoishiPluginConfig) {
@@ -725,6 +726,18 @@ class PrismKoishiService {
   }
 
   async logout(sender: Sender, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
+    const existing = this.logoutInFlight.get(sender.id);
+    if (existing) return existing;
+    const task = this.performLogout(sender, bot);
+    this.logoutInFlight.set(sender.id, task);
+    try {
+      return await task;
+    } finally {
+      if (this.logoutInFlight.get(sender.id) === task) this.logoutInFlight.delete(sender.id);
+    }
+  }
+
+  private async performLogout(sender: Sender, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
     const result = (await this.client.confirmCheckoutByIdentity(this.identity(sender))) as UncheckedRecord;
     const settlement = result?.playerSettlement ?? result?.settlement ?? {};
     const records = result?.settlements ?? [];

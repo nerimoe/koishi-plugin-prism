@@ -1,6 +1,6 @@
 {
   "name": "koishi-plugin-prism",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "PRiSM Next 计费与设备管理系统的 Koishi 机器人集成插件",
   "main": "./lib/index.js",
   "exports": {
