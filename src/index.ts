@@ -432,10 +432,10 @@ class PrismApiClient {
     });
   }
 
-  async confirmCheckoutByIdentity(identity: any) {
+  async confirmCheckoutByIdentity(identity: any, closeSessionsBeforeBalanceCheck = true) {
     return this.request("POST", "/rpc/integration/players/by-identity/checkout/confirm", {
       token: this.config.integrationToken,
-      body: this.identityBody(identity),
+      body: { ...this.identityBody(identity), closeSessionsBeforeBalanceCheck },
     });
   }
 
@@ -738,7 +738,7 @@ class PrismKoishiService {
   }
 
   private async performLogout(sender: Sender, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
-    const result = (await this.client.confirmCheckoutByIdentity(this.identity(sender))) as UncheckedRecord;
+    const result = (await this.client.confirmCheckoutByIdentity(this.identity(sender), false)) as UncheckedRecord;
     const settlement = result?.playerSettlement ?? result?.settlement ?? {};
     const records = result?.settlements ?? [];
     const sessionPreviews = records.map((rec: UncheckedRecord) => {
@@ -1182,7 +1182,18 @@ class PrismKoishiService {
     lines.push("");
     lines.push(`计费总价：${formatNumber(subtotal)}${currency}`);
     if (hasNonZeroAdjustment) lines.push(`优惠后价格：${formatNumber(total)}${currency}`);
-    if (hasBalance) lines.push(`扣款后余额：${formatNumber(balance)}${currency}`);
+    if (hasBalance) {
+      const isPreview = result?.settlementPreview != null && result?.settlement == null;
+      if (isPreview) {
+        const projectedBalance = balance - toNumber(total);
+        lines.push(`当前余额：${formatNumber(balance)}${currency}`);
+        lines.push(projectedBalance >= 0
+          ? `预计结账后余额：${formatNumber(projectedBalance)}${currency}`
+          : `预计结账后余额：余额不足（还差 ${formatNumber(-projectedBalance)}${currency}）`);
+      } else {
+        lines.push(`扣款后余额：${formatNumber(balance)}${currency}`);
+      }
+    }
 
     return lines.join("\n");
   }

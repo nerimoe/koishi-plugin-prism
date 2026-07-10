@@ -215,7 +215,8 @@ describe("applyPrismKoishiPlugin", () => {
     expect(billingResult).toContain("  └ 月卡折扣：-3猫粮");
     expect(billingResult).toContain("计费总价：25猫粮");
     expect(billingResult).toContain("优惠后价格：22猫粮");
-    expect(billingResult).toContain("扣款后余额：100猫粮");
+    expect(billingResult).toContain("当前余额：100猫粮");
+    expect(billingResult).toContain("预计结账后余额：78猫粮");
     expect(billingResult).not.toContain("玩家ID：");
     expect(billingResult).not.toContain("————————————");
     expect(billingResult).not.toContain("　｜　");
@@ -806,7 +807,8 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).toContain("🎮 音游区间");
     expect(result).toContain("🀄️ 大洋化学");
     expect(result).toContain("计费总价：30猫粮");
-    expect(result).toContain("扣款后余额：42猫粮");
+    expect(result).toContain("当前余额：42猫粮");
+    expect(result).toContain("预计结账后余额：12猫粮");
     expect(result).not.toContain("优惠后价格：");
   });
 });
