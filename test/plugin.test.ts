@@ -178,6 +178,7 @@ describe("applyPrismKoishiPlugin", () => {
       "logout [target:user]",
       "billing [target:user]",
       "wallet [target:user]",
+      "api测速 [count:number]",
       "items [target:user]",
       "list",
       "show [deviceId]",
@@ -224,6 +225,9 @@ describe("applyPrismKoishiPlugin", () => {
     const listResult = await registered.get("list")?.action({ session: { userId: "123456" } });
     expect(listResult).toContain("[总计 1 人]");
     expect(listResult).toContain("Player 296");
+
+    const benchmark = await registered.get("api测速 [count:number]")?.action({ session: { userId: "123456" } }, "2");
+    expect(benchmark).toContain("PRiSM API 测速（钱包查询，2 次）");
   });
 
   it("quotes command replies and notifies configured logout recipients", async () => {

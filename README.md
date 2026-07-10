@@ -75,6 +75,7 @@ pricingConfigIds: [pricing-mahjong-a]
 * `mahjong <tableId>` / `上桌 [tableId]` - 加入指定麻将桌；`/上桌` 未提供桌号时会引导查看 `/麻将列表`。仅允许已通过 `login`/`入场` 开启默认入场会话的玩家使用。
 * `下桌` - 自动离开当前所在麻将桌。
 * `麻将列表` - 查看已配置机器的桌名、命令别名，以及空闲、等位或游玩中状态。
+* `api测速 [次数]` - 连续查询自己的钱包，显示 Bot 到 PRiSM API 的最小、平均与最大延迟（默认 3 次，最多 10 次）。
 
 ### 管理员快捷指令
 启用 `enableStaffCommands`、配置 `staffUserIds` 白名单与 `staffSessionToken` 后可使用：

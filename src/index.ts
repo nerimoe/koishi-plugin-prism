@@ -119,6 +119,7 @@ const USAGE: Record<string, string> = {
   mahjong_join: "/上桌 <桌号>",
   mahjong_leave: "/下桌",
   mahjong_list: "/麻将列表",
+  api_benchmark: "/api测速 [次数]",
   prism_on: "/prism on <设备ID>",
   prism_off: "/prism off <设备ID|all>",
   prism_coin: "/prism coin <设备ID> [数量]",
@@ -228,6 +229,10 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
 
   ctx.command("wallet [target:user]", "查看玩家钱包").action(wrap(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.wallet(sender), context.session?.bot),
+  ));
+
+  ctx.command("api测速 [count:number]", "测试 Bot 到 PRiSM API 的钱包查询延迟").action(wrap(async (context, count) =>
+    service.benchmarkApi(await service.sender(context), count),
   ));
 
   ctx.command("items [target:user]", "查看玩家资产").action(wrap(async (context, target) =>
@@ -777,6 +782,26 @@ class PrismKoishiService {
   async wallet(sender: Sender): Promise<string> {
     const result = (await this.client.getWalletByIdentity(this.identity(sender))) as UncheckedRecord;
     return formatWallet(result, this.config.currencyName);
+  }
+
+  async benchmarkApi(sender: Sender, rawCount?: string): Promise<string> {
+    const count = rawCount == null || rawCount === "" ? 3 : Number(rawCount);
+    if (!Number.isInteger(count) || count < 1 || count > 10) return "次数须为 1 到 10 的整数。";
+    const samples: number[] = [];
+    for (let index = 0; index < count; index++) {
+      const startedAt = performance.now();
+      await this.client.getWalletByIdentity(this.identity(sender));
+      samples.push(performance.now() - startedAt);
+    }
+    const min = Math.min(...samples);
+    const max = Math.max(...samples);
+    const average = samples.reduce((sum, sample) => sum + sample, 0) / samples.length;
+    return [
+      `📡 PRiSM API 测速（钱包查询，${count} 次）`,
+      `最小：${formatNumber(min)} ms`,
+      `平均：${formatNumber(average)} ms`,
+      `最大：${formatNumber(max)} ms`,
+    ].join("\n");
   }
 
   async items(sender: Sender): Promise<string> {
