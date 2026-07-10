@@ -253,7 +253,7 @@ describe("applyPrismKoishiPlugin", () => {
     expect(broadcasts).toHaveLength(1);
     expect(broadcasts[0][0]).toEqual(["staff-1", "audit-1"]);
     expect(broadcasts[0][1]).toContain("✅ 退场成功 · 结算账单");
-    expect(broadcasts[0][1]).toContain("玩家：player-1（QQ：123456）");
+    expect(broadcasts[0][1]).toContain("玩家：Tester（QQ：123456）");
     expect(broadcasts[0][1]).not.toContain("quote");
   });
 
@@ -289,7 +289,7 @@ describe("applyPrismKoishiPlugin", () => {
       "overwrite <target:user> <amount:number> [reason:text]",
     ]));
     await expect(registered.get("login [target:user]")?.action(adminContext, "target-qq")).resolves.toContain("已为用户");
-    await expect(registered.get("login [target:user]")?.action(adminContext, "onebot:262661418")).resolves.toContain("已为用户 262661418 入场");
+    await expect(registered.get("login [target:user]")?.action(adminContext, "onebot:262661418")).resolves.toContain("已为用户 未知昵称（QQ：262661418） 入场");
     await expect(registered.get("login [target:user]")?.action(playerContext, "target-qq")).resolves.toBe("权限不足");
     await expect(registered.get("add <target:user> <amount:number>")?.action(adminContext, "target-qq", "10")).resolves.toContain("已为用户");
     await expect(registered.get("del <target:user> <amount:number>")?.action(adminContext, "target-qq", "3")).resolves.toContain("已为用户");

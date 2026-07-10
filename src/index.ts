@@ -547,7 +547,7 @@ class PrismKoishiService {
 
   async sender(context: KoishiActionContext): Promise<Sender> {
     const id = context.session?.senderId || context.session?.userId || "";
-    let name = id;
+    let name = context.session?.username || context.session?.senderName || id;
     try {
       if (context.session?.bot?.getUser) {
         const user = await context.session.bot.getUser(id);
@@ -555,9 +555,7 @@ class PrismKoishiService {
           name = user.name;
         }
       }
-    } catch {
-      name = context.session?.username || context.session?.senderName || id;
-    }
+    } catch {}
     return { id, name };
   }
 
@@ -569,7 +567,7 @@ class PrismKoishiService {
   async loginForTarget(actor: Sender, targetSubject?: string, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
     return this.withTarget(actor, targetSubject, async (sender, isTargeted) => {
       await this.client.startSessionByIdentity(this.identity(sender), this.loginSessionBody());
-      return isTargeted ? `✅ 已为用户 ${formatPlayerReference(sender)} 入场成功` : "✅ 入场成功";
+      return isTargeted ? `✅ 已为用户 ${formatPlayerReference(sender, this.config.provider)} 入场成功` : "✅ 入场成功";
     }, bot);
   }
 
@@ -600,7 +598,7 @@ class PrismKoishiService {
         quantityDelta: amount * direction,
         reason: isAddition ? "Koishi 管理员增加余额" : "Koishi 管理员扣除余额",
       }]);
-      return `✅ 已为用户 ${sender.id}${isAddition ? "增加" : "扣除"} ${formatNumber(amount)} ${this.config.currencyName}`;
+      return `✅ 已为用户 ${formatPlayerReference(sender, this.config.provider)}${isAddition ? "增加" : "扣除"} ${formatNumber(amount)} ${this.config.currencyName}`;
     }, bot);
   }
 
@@ -610,7 +608,7 @@ class PrismKoishiService {
       if (!Number.isFinite(total) || total < 0) return "金额必须为非负数";
       const reason = cleanText(rawReason) || "Koishi 管理员手动调价";
       await this.client.checkoutWithOverrideByIdentity(this.identity(sender), total, reason);
-      return `✅ 已为用户 ${formatPlayerReference(sender)} 覆盖结账为 ${formatNumber(total)} ${this.config.currencyName}`;
+      return `✅ 已为用户 ${formatPlayerReference(sender, this.config.provider)} 覆盖结账为 ${formatNumber(total)} ${this.config.currencyName}`;
     }, bot);
   }
 
@@ -946,8 +944,8 @@ class PrismKoishiService {
     if (!sender) return playerId || "未知玩家";
     const platformName = await this.resolvePlatformName(sender.id);
     const name = platformName
-      || (sender.name && sender.name !== sender.id ? sender.name : playerId)
-      || sender.id;
+      || (sender.name && sender.name !== sender.id ? sender.name : "")
+      || "未知昵称";
     return `玩家：${name}（${this.config.provider.toUpperCase()}：${sender.id}）`;
   }
 
@@ -1331,10 +1329,9 @@ function normalizeTargetSubject(value: unknown): string {
   return separator > 0 ? subject.slice(separator + 1) : subject;
 }
 
-function formatPlayerReference(sender: Sender): string {
-  return sender.name && sender.name !== sender.id
-    ? `${sender.name}（QQ：${sender.id}）`
-    : sender.id;
+function formatPlayerReference(sender: Sender, provider = "qq"): string {
+  const name = sender.name && sender.name !== sender.id ? sender.name : "未知昵称";
+  return `${name}（${provider.toUpperCase()}：${sender.id}）`;
 }
 
 function toNumber(value: any): number {
