@@ -17,9 +17,8 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   logoutNotifyUserIds: Schema.array(Schema.string()).default([]).description("结账账单私聊通知的平台用户ID列表"),
   powerOffInterval: Schema.number().default(0).description("无人自动关机等待秒数 (0为禁用)"),
   mahjongTableConfigs: Schema.array(Schema.object({
-    tableId: Schema.string().required().description("主桌号，例如 a"),
     displayName: Schema.string().required().description("桌位显示名称和 session 标签"),
-    aliases: Schema.array(Schema.string()).default([]).description("可选别名，例如 四麻A"),
+    aliases: Schema.array(Schema.string()).default([]).description("命令别名（至少一个），例如 a、四麻A"),
     pricingConfigIds: Schema.array(Schema.string()).default([]).description("开局时绑定的计费方案 ID"),
   })).default([]).description("麻将桌配置"),
   mahjongTables: Schema.string().description("旧版麻将桌文本配置（已废弃；仅在结构化配置为空时使用）"),
@@ -50,7 +49,7 @@ export type MahjongTableConfig = {
   pricingConfigIds: string[];
 };
 
-export type MahjongTableConfigInput = MahjongTableConfig;
+export type MahjongTableConfigInput = Omit<MahjongTableConfig, "tableId">;
 
 export type PrismKoishiPluginConfig = {
   provider: string;
@@ -923,7 +922,7 @@ class PrismKoishiService {
 
   private mergeWaitingSeats(groups: PlayerGroups): void {
     for (const [tableId, state] of this.mahjongTables) {
-      const table = this.mahjongTableConfigs().get(tableId);
+      const table = uniqueMahjongConfigs(this.mahjongTableConfigs()).find((candidate) => candidate.tableId === tableId);
       if (!table) continue;
       const label = mahjongSessionLabel(table, this.config.mahjongLabelPrefix ?? "麻将桌");
       let group = groups.groups.find((candidate) => candidate.label === label);
@@ -1234,9 +1233,9 @@ export function resolveMahjongTableConfigs(
   if (structured.length === 0) return parseMahjongTables(legacyValue, labelPrefix);
   const tables = new Map<string, MahjongTableConfig>();
   for (const input of structured) {
-    const tableId = cleanText(input.tableId);
     const displayName = cleanText(input.displayName);
-    const aliases = [...new Set([tableId, ...(input.aliases ?? []).map(cleanText).filter(Boolean)])];
+    const tableId = displayName;
+    const aliases = [...new Set((input.aliases ?? []).map(cleanText).filter(Boolean))];
     const pricingConfigIds = (input.pricingConfigIds ?? []).map(cleanText).filter(Boolean);
     if (!tableId || !displayName || pricingConfigIds.length === 0) continue;
     const table: MahjongTableConfig = { tableId, displayName, aliases, pricingConfigIds };

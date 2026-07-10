@@ -32,7 +32,7 @@
 | `enableStaffCommands` | `boolean` | `false` | 是否开启管理员快捷指令。 |
 | `staffUserIds` | `string[]` | `[]` | 允许执行管理员快捷指令的平台用户 ID（如 QQ 号）白名单。空列表不授予目标用户操作权限。 |
 | `logoutNotifyUserIds` | `string[]` | `[]` | 结账成功后额外私聊完整账单的平台用户 ID。通知收件人为该列表与 `staffUserIds` 的去重并集。 |
-| `mahjongTableConfigs` | `object[]` | `[]` | 推荐的结构化麻将桌列表。每项填写主桌号、显示名称、别名列表与计费方案 ID 列表。 |
+| `mahjongTableConfigs` | `object[]` | `[]` | 推荐的结构化麻将桌列表。每项填写显示名称、命令别名列表与计费方案 ID 列表。显示名称同时作为内部桌位锚点与 session 标签。 |
 | `mahjongTables` | `string` | - | 旧版文本配置，仅在 `mahjongTableConfigs` 为空时读取；建议迁移到结构化列表。 |
 
 ### 麻将桌配置
@@ -40,13 +40,12 @@
 在 Koishi 配置页的 `mahjongTableConfigs` 中新增桌位，每一项填写：
 
 ```yaml
-tableId: a
 displayName: "🀄️ M.LEAGUE联名比赛专用机"
-aliases: [四麻A, 比赛机]
+aliases: [a, 四麻A, 比赛机]
 pricingConfigIds: [pricing-mahjong-a]
 ```
 
-结构化配置有内容时优先于旧 `mahjongTables` 文本；已有旧配置不会失效，可逐桌迁移。
+`displayName` 是该桌的稳定锚点和 session 标签；玩家输入的桌号、简称等均写入 `aliases`（至少一个）。结构化配置有内容时优先于旧 `mahjongTables` 文本；已有旧配置不会失效，可逐桌迁移。
 
 管理员快捷指令必须同时配置 `enableStaffCommands: true` 与 `staffUserIds`。它们使用现有 `integrationToken` 调用受限的余额调整和立即结账接口；目标用户参数使用 Koishi 的 `user` 选择器，只有白名单内的管理员可以操作其他用户。
 

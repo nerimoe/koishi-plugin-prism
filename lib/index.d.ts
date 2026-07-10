@@ -14,7 +14,7 @@ export type MahjongTableConfig = {
     aliases: string[];
     pricingConfigIds: string[];
 };
-export type MahjongTableConfigInput = MahjongTableConfig;
+export type MahjongTableConfigInput = Omit<MahjongTableConfig, "tableId">;
 export type PrismKoishiPluginConfig = {
     provider: string;
     autoRegister: boolean;
