@@ -760,6 +760,48 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).not.toContain("扣款后余额：");
   });
 
+  it("renders confirmed checkout holdings as the deducted balance", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.confirmCheckoutByIdentity = async () => ({
+      settlement: { playerId: "player-1", subtotal: 90, total: 79 },
+      settlements: [{
+        settlement: {
+          sessionId: "s-1",
+          label: "🎵 音乐游戏",
+          startedAt: "2026-07-10T17:55:00.000Z",
+          settledAt: "2026-07-10T23:31:00.000Z",
+          subtotal: 90,
+          total: 79,
+        },
+        chargeItems: [],
+        adjustments: [{ label: "夜间", amount: -11 }],
+      }],
+      chargeItems: [],
+      adjustments: [{ label: "夜间", amount: -11 }],
+      assetHoldings: [{ assetCode: "paid", quantity: 2 }],
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const result = await registered.get("logout [target:user]")?.action({
+      session: { userId: "3202659259", senderName: "李育群" },
+    });
+
+    expect(result).toContain("✅ 退场成功 · 结算账单");
+    expect(result).toContain("计费总价：90猫粮");
+    expect(result).toContain("优惠后价格：79猫粮");
+    expect(result).toContain("扣款后余额：2猫粮");
+    expect(result).not.toContain("当前余额：");
+    expect(result).not.toContain("预计结账后余额：");
+  });
+
   it("renders multi-session billing format with labels as-is", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
