@@ -130,6 +130,10 @@ function createDefaultClient() {
       calls.push(["adjustAssetsByIdentity", identity, adjustments]);
       return { holdings: [] };
     },
+    async adjustWalletByIdentity(identity: unknown, amount: number, reason: string) {
+      calls.push(["adjustWalletByIdentity", identity, amount, reason]);
+      return { holdings: [], balanceBefore: 100, balanceAfter: 90 };
+    },
     async checkoutWithOverrideByIdentity(identity: unknown, total: number, reason: string) {
       calls.push(["checkoutWithOverrideByIdentity", identity, total, reason]);
       return { settlement: { total } };
@@ -296,22 +300,12 @@ describe("applyPrismKoishiPlugin", () => {
     await expect(registered.get("del <target:user> <amount:number>")?.action(adminContext, "target-qq", "3")).resolves.toContain("已为用户");
     await expect(registered.get("overwrite <target:user> <amount:number> [reason:text]")?.action(adminContext, "target-qq", "30")).resolves.toContain("已为用户");
 
-    expect(client.calls).toContainEqual(["adjustAssetsByIdentity", {
+    expect(client.calls).toContainEqual(["adjustWalletByIdentity", {
       provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",
-    }, [{
-      assetType: "currency",
-      assetCode: "paid",
-      quantityDelta: 10,
-      reason: "Koishi 管理员增加余额",
-    }]]);
-    expect(client.calls).toContainEqual(["adjustAssetsByIdentity", {
+    }, 10, "Koishi 管理员增加余额"]);
+    expect(client.calls).toContainEqual(["adjustWalletByIdentity", {
       provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",
-    }, [{
-      assetType: "currency",
-      assetCode: "paid",
-      quantityDelta: -3,
-      reason: "Koishi 管理员扣除余额",
-    }]]);
+    }, -3, "Koishi 管理员扣除余额"]);
     expect(client.calls).toContainEqual(["checkoutWithOverrideByIdentity", {
       provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",
     }, 30, "Koishi 管理员手动调价"]);

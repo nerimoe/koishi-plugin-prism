@@ -502,6 +502,13 @@ class PrismApiClient {
     });
   }
 
+  async adjustWalletByIdentity(identity: any, amount: number, reason: string) {
+    return this.request("POST", "/rpc/integration/players/by-identity/wallet/adjustment", {
+      token: this.config.integrationToken,
+      body: { ...this.identityBody(identity), amount, reason },
+    });
+  }
+
   async checkoutWithOverrideByIdentity(identity: any, total: number, reason: string) {
     return this.request("POST", "/rpc/integration/players/by-identity/checkout/override", {
       token: this.config.integrationToken,
@@ -597,12 +604,11 @@ class PrismKoishiService {
       const amount = Number(rawAmount);
       if (!Number.isFinite(amount) || amount <= 0) return "金额必须大于 0";
       const isAddition = direction === 1;
-      await this.client.adjustAssetsByIdentity(this.identity(sender), [{
-        assetType: "currency",
-        assetCode: "paid",
-        quantityDelta: amount * direction,
-        reason: isAddition ? "Koishi 管理员增加余额" : "Koishi 管理员扣除余额",
-      }]);
+      await this.client.adjustWalletByIdentity(
+        this.identity(sender),
+        amount * direction,
+        isAddition ? "Koishi 管理员增加余额" : "Koishi 管理员扣除余额",
+      );
       return `✅ 已为用户 ${formatPlayerReference(sender, this.config.provider)}${isAddition ? "增加" : "扣除"} ${formatNumber(amount)} ${this.config.currencyName}`;
     }, bot);
   }
