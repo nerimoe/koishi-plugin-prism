@@ -14,6 +14,7 @@ export type MahjongTableConfig = {
     aliases: string[];
     pricingConfigIds: string[];
 };
+export type MahjongTableConfigInput = MahjongTableConfig;
 export type PrismKoishiPluginConfig = {
     provider: string;
     autoRegister: boolean;
@@ -25,6 +26,7 @@ export type PrismKoishiPluginConfig = {
     enableStaffCommands?: boolean;
     staffUserIds?: string[];
     logoutNotifyUserIds?: string[];
+    mahjongTableConfigs?: MahjongTableConfigInput[];
     mahjongTables?: string;
     mahjongTableSize?: number;
     mahjongLabelPrefix?: string;
@@ -75,6 +77,7 @@ export type Sender = {
 };
 export declare function humanReadableBotError(error: PrismBotClientError): string;
 export declare function parseMahjongTables(value: string, labelPrefix: string): Map<string, MahjongTableConfig>;
+export declare function resolveMahjongTableConfigs(structured: readonly MahjongTableConfigInput[], legacyValue: string, labelPrefix: string): Map<string, MahjongTableConfig>;
 declare const _default: {
     name: string;
     Config: Schema<PrismKoishiPluginConfig>;

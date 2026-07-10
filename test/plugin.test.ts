@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { applyPrismKoishiPlugin, PrismBotClientError, type PrismKoishiPluginConfig } from "../src";
+import { applyPrismKoishiPlugin, PrismBotClientError, resolveMahjongTableConfigs, type PrismKoishiPluginConfig } from "../src";
 
 type RegisteredCommand = {
   description: string;
@@ -138,6 +138,14 @@ function createDefaultClient() {
 }
 
 describe("applyPrismKoishiPlugin", () => {
+  it("prefers structured mahjong table configuration over legacy text", () => {
+    const tables = resolveMahjongTableConfigs([
+      { tableId: "a", displayName: "雀友四口麻将机", aliases: ["四麻A"], pricingConfigIds: ["pricing-a"] },
+    ], "legacy = pricing-legacy", "麻将桌");
+    expect(tables.get("a")).toMatchObject({ tableId: "a", displayName: "雀友四口麻将机", pricingConfigIds: ["pricing-a"] });
+    expect(tables.get("四麻A")?.tableId).toBe("a");
+    expect(tables.has("legacy")).toBe(false);
+  });
   it("registers all player commands and basic flows work", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);

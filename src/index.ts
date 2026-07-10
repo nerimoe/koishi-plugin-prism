@@ -16,7 +16,13 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   staffUserIds: Schema.array(Schema.string()).default([]).description("允许执行管理员指令的平台用户ID列表"),
   logoutNotifyUserIds: Schema.array(Schema.string()).default([]).description("结账账单私聊通知的平台用户ID列表"),
   powerOffInterval: Schema.number().default(0).description("无人自动关机等待秒数 (0为禁用)"),
-  mahjongTables: Schema.string().description("麻将桌配置"),
+  mahjongTableConfigs: Schema.array(Schema.object({
+    tableId: Schema.string().required().description("主桌号，例如 a"),
+    displayName: Schema.string().required().description("桌位显示名称和 session 标签"),
+    aliases: Schema.array(Schema.string()).default([]).description("可选别名，例如 四麻A"),
+    pricingConfigIds: Schema.array(Schema.string()).default([]).description("开局时绑定的计费方案 ID"),
+  })).default([]).description("麻将桌配置"),
+  mahjongTables: Schema.string().description("旧版麻将桌文本配置（已废弃；仅在结构化配置为空时使用）"),
   mahjongTableSize: Schema.number().default(4).description("麻将桌人数限制"),
   mahjongLabelPrefix: Schema.string().default("麻将桌").description("麻将账单前缀"),
 });
@@ -44,6 +50,8 @@ export type MahjongTableConfig = {
   pricingConfigIds: string[];
 };
 
+export type MahjongTableConfigInput = MahjongTableConfig;
+
 export type PrismKoishiPluginConfig = {
   provider: string;
   autoRegister: boolean;
@@ -55,6 +63,7 @@ export type PrismKoishiPluginConfig = {
   enableStaffCommands?: boolean;
   staffUserIds?: string[];
   logoutNotifyUserIds?: string[];
+  mahjongTableConfigs?: MahjongTableConfigInput[];
   mahjongTables?: string;
   mahjongTableSize?: number;
   mahjongLabelPrefix?: string;
@@ -953,7 +962,7 @@ class PrismKoishiService {
   }
 
   private mahjongTableConfigs(): Map<string, MahjongTableConfig> {
-    return parseMahjongTables(this.config.mahjongTables ?? "", this.config.mahjongLabelPrefix ?? "麻将桌");
+    return resolveMahjongTableConfigs(this.config.mahjongTableConfigs ?? [], this.config.mahjongTables ?? "", this.config.mahjongLabelPrefix ?? "麻将桌");
   }
 
   private syncMahjongTableStates(sessions: readonly ActiveSessionListItem[]): void {
@@ -1213,6 +1222,25 @@ export function parseMahjongTables(value: string, labelPrefix: string): Map<stri
       pricingConfigIds,
     };
     for (const alias of aliases) tables.set(alias, config);
+  }
+  return tables;
+}
+
+export function resolveMahjongTableConfigs(
+  structured: readonly MahjongTableConfigInput[],
+  legacyValue: string,
+  labelPrefix: string,
+): Map<string, MahjongTableConfig> {
+  if (structured.length === 0) return parseMahjongTables(legacyValue, labelPrefix);
+  const tables = new Map<string, MahjongTableConfig>();
+  for (const input of structured) {
+    const tableId = cleanText(input.tableId);
+    const displayName = cleanText(input.displayName);
+    const aliases = [...new Set([tableId, ...(input.aliases ?? []).map(cleanText).filter(Boolean)])];
+    const pricingConfigIds = (input.pricingConfigIds ?? []).map(cleanText).filter(Boolean);
+    if (!tableId || !displayName || pricingConfigIds.length === 0) continue;
+    const table: MahjongTableConfig = { tableId, displayName, aliases, pricingConfigIds };
+    for (const alias of aliases) tables.set(alias, table);
   }
   return tables;
 }
