@@ -802,6 +802,130 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).not.toContain("预计结账后余额：");
   });
 
+  it("renders a unified discount outside the session it was persisted with", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    const discount = {
+      id: "session-1:asset-definition:ticket:freemother:free",
+      source: "ticket.freemother",
+      label: "老冯",
+      amount: -12,
+    };
+    client.confirmCheckoutByIdentity = async () => ({
+      settlement: { playerId: "player-1", subtotal: 12, total: 0 },
+      settlements: [{
+        settlement: {
+          sessionId: "session-1",
+          label: "🎵 音乐游戏",
+          startedAt: "2026-07-10T07:18:43.664Z",
+          settledAt: "2026-07-10T08:13:48.998Z",
+          subtotal: 12,
+          total: 0,
+        },
+        chargeItems: [],
+        adjustments: [discount],
+      }],
+      adjustments: [discount],
+      checkoutAdjustments: [discount],
+      pricingCapAdjustments: [],
+      globalCapWindows: [],
+      assetHoldings: [{ assetCode: "paid", quantity: 0 }],
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const result = await registered.get("logout [target:user]")?.action({
+      session: { userId: "1015929452", senderName: "月" },
+    });
+
+    expect(result).toContain("游玩时长：55分钟｜消费：12猫粮");
+    expect(result).toContain("🎟️ 整单优惠\n- 老冯：-12猫粮");
+    expect(result).toContain("计费总价：12猫粮");
+    expect(result).toContain("优惠后价格：0猫粮");
+    expect(result).not.toContain("  └ 老冯：");
+  });
+
+  it("renders global caps as pricing instead of a session discount", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    const capAdjustment = {
+      id: "time-cap:cap-config:day:2026-07-10T02:00:00.000Z",
+      source: "time.cap:cap-config:day",
+      label: "日间",
+      amount: -39,
+      pricingCapHistory: {
+        capConfigId: "cap-config",
+        capRuleId: "day",
+        capAnchorAt: "2026-07-10T02:00:00.000Z",
+        includedPricingConfigIds: ["music", "mahjong"],
+        amount: 42,
+      },
+    };
+    client.confirmCheckoutByIdentity = async () => ({
+      settlement: { playerId: "player-1", subtotal: 81, total: 42 },
+      settlements: [{
+        settlement: {
+          sessionId: "music-1",
+          label: "🎵 音乐游戏",
+          startedAt: "2026-07-10T07:28:00.000Z",
+          settledAt: "2026-07-10T12:42:00.000Z",
+          subtotal: 66,
+          total: 66,
+        },
+        chargeItems: [],
+        adjustments: [],
+      }, {
+        settlement: {
+          sessionId: "mahjong-4",
+          label: "🀄️ 大洋化学M.LEAGUE联名八口机",
+          startedAt: "2026-07-10T11:25:00.000Z",
+          settledAt: "2026-07-10T12:19:00.000Z",
+          subtotal: 3,
+          total: 0,
+        },
+        chargeItems: [],
+        adjustments: [capAdjustment],
+      }],
+      adjustments: [capAdjustment],
+      checkoutAdjustments: [],
+      pricingCapAdjustments: [capAdjustment],
+      globalCapWindows: [{
+        ruleLabel: "日间",
+        currentAmount: 81,
+        amountApplied: 42,
+        priceCap: 69,
+        paidBefore: 27,
+      }],
+      assetHoldings: [{ assetCode: "paid", quantity: 185 }],
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const result = await registered.get("logout [target:user]")?.action({
+      session: { userId: "1075979543", senderName: "哈基はち" },
+    });
+
+    expect(result).toContain("游玩时长：54分钟｜消费：3猫粮");
+    expect(result).toContain(
+      "🧢 全局封顶\n- 日间：本次参与 81猫粮 → 计入 42猫粮（封顶 69猫粮，之前已计 27猫粮）",
+    );
+    expect(result).toContain("计费总价：42猫粮");
+    expect(result).not.toContain("优惠后价格：");
+    expect(result).not.toContain("  └ 日间：");
+  });
+
   it("renders multi-session billing format with labels as-is", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
