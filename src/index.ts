@@ -1238,7 +1238,7 @@ class PrismKoishiService {
     );
     if (cappedWindows.length > 0 || appliedCapAdjustments.length > 0) {
       lines.push("");
-      lines.push("🧢 全局封顶");
+      lines.push("🧢 封顶");
       if (cappedWindows.length > 0) {
         for (const window of cappedWindows) {
           const label = firstDefined(window, "ruleLabel", "label", "name") ?? "封顶时段";
@@ -1268,7 +1268,7 @@ class PrismKoishiService {
       const hasManualAdjustment = visibleCheckoutAdjustments.some((adjustment) =>
         cleanText(adjustment?.source).startsWith("staff.override:"),
       );
-      lines.push(hasManualAdjustment ? "🧾 整单调整" : "🎟️ 整单优惠");
+      lines.push(hasManualAdjustment ? "🧾 调整" : "🎟️ 优惠");
       for (const adjustment of visibleCheckoutAdjustments) {
         const amount = toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0));
         const label = firstDefined(adjustment ?? {}, "label", "name", "source") ?? "优惠";

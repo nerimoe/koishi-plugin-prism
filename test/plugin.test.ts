@@ -845,7 +845,7 @@ describe("applyPrismKoishiPlugin", () => {
     });
 
     expect(result).toContain("游玩时长：55分钟｜消费：12猫粮");
-    expect(result).toContain("🎟️ 整单优惠\n- 老冯：-12猫粮");
+    expect(result).toContain("🎟️ 优惠\n- 老冯：-12猫粮");
     expect(result).toContain("计费总价：12猫粮");
     expect(result).toContain("优惠后价格：0猫粮");
     expect(result).not.toContain("  └ 老冯：");
@@ -919,7 +919,7 @@ describe("applyPrismKoishiPlugin", () => {
 
     expect(result).toContain("游玩时长：54分钟｜消费：3猫粮");
     expect(result).toContain(
-      "🧢 全局封顶\n- 日间：本次参与 81猫粮 → 计入 42猫粮（封顶 69猫粮，之前已计 27猫粮）",
+      "🧢 封顶\n- 日间：本次参与 81猫粮 → 计入 42猫粮（封顶 69猫粮，之前已计 27猫粮）",
     );
     expect(result).toContain("计费总价：42猫粮");
     expect(result).not.toContain("优惠后价格：");
