@@ -949,6 +949,56 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).not.toContain("  └ 日间：");
   });
 
+  it("renders legacy cap adjustments without exposing the internal delta", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    const capAdjustment = {
+      id: "time-cap:cap-config:night:2026-07-10T14:00:00.000Z",
+      source: "time.cap:cap-config:night",
+      label: "夜间",
+      amount: -21,
+      pricingCapHistory: {
+        capConfigId: "cap-config",
+        capRuleId: "night",
+        capAnchorAt: "2026-07-10T14:00:00.000Z",
+        includedPricingConfigIds: ["music"],
+        amount: 79,
+      },
+    };
+    client.previewCheckoutByIdentity = async () => ({
+      settlementPreview: { playerId: "player-1", subtotal: 100, total: 79 },
+      sessionPreviews: [{
+        sessionId: "music-1",
+        label: "🎵 音乐游戏",
+        startedAt: "2026-07-10T17:38:00.000Z",
+        endedAt: "2026-07-11T00:35:00.000Z",
+        status: "active",
+        subtotal: 100,
+        total: 100,
+        adjustments: [],
+      }],
+      adjustments: [capAdjustment],
+      pricingCapAdjustments: [capAdjustment],
+      assetHoldings: [{ assetCode: "paid", quantity: 36.5 }],
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const result = await registered.get("billing [target:user]")?.action({
+      session: { userId: "3105949451", senderName: "🈚" },
+    });
+
+    expect(result).toContain("封顶：\n- 07-10 夜间：100 → 79猫粮");
+    expect(result).not.toContain("计费调整");
+    expect(result).not.toContain("-21猫粮");
+  });
+
   it("renders multi-session billing format with labels as-is", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
