@@ -594,6 +594,27 @@ describe("applyPrismKoishiPlugin", () => {
     expect(client.calls).toContainEqual(["stopSessionByIdentity", expect.anything(), "mahjong-session"]);
   });
 
+  it("displays remaining player count on leave mid-game", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+      mahjongTables: "a : 大洋化学 = pricing-mahjong-a", mahjongTableSize: 4, client: client as any,
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
+
+    // Mock active sessions with 2 players
+    client.listActiveSessions = async () => ({
+      sessions: [
+        { id: "session-1", playerId: "player-1", label: "大洋化学", identities: [{ provider: "qq", subject: "1" }] },
+        { id: "session-2", playerId: "player-2", label: "大洋化学", identities: [{ provider: "qq", subject: "2" }] },
+      ]
+    });
+
+    const leaveResult = await registered.get("下桌")?.action({ session: { userId: "1" } });
+    expect(leaveResult).toContain("已离开 大洋化学，麻将计费已停止。当前还剩 1/4 人。");
+  });
+
   it("does not register legacy admin commands", () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
