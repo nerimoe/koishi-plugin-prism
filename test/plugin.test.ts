@@ -845,9 +845,9 @@ describe("applyPrismKoishiPlugin", () => {
     });
 
     expect(result).toContain("游玩时长：55分钟｜消费：12猫粮");
-    expect(result).toContain("🎟️ 优惠\n- 老冯：-12猫粮");
-    expect(result).toContain("计费总价：12猫粮");
-    expect(result).toContain("优惠后价格：0猫粮");
+    expect(result).toContain("计费总价：12猫粮\n\n老冯：-12猫粮\n\n优惠后价格：0猫粮");
+    expect(result).not.toContain("🎟️");
+    expect(result).not.toContain("优惠\n");
     expect(result).not.toContain("  └ 老冯：");
   });
 
@@ -867,8 +867,21 @@ describe("applyPrismKoishiPlugin", () => {
         amount: 42,
       },
     };
+    const secondCapAdjustment = {
+      id: "time-cap:cap-config:night:2026-07-11T14:00:00.000Z",
+      source: "time.cap:cap-config:night",
+      label: "夜间",
+      amount: -5,
+      pricingCapHistory: {
+        capConfigId: "cap-config",
+        capRuleId: "night",
+        capAnchorAt: "2026-07-11T14:00:00.000Z",
+        includedPricingConfigIds: ["music", "mahjong"],
+        amount: 25,
+      },
+    };
     client.confirmCheckoutByIdentity = async () => ({
-      settlement: { playerId: "player-1", subtotal: 81, total: 42 },
+      settlement: { playerId: "player-1", subtotal: 111, total: 67 },
       settlements: [{
         settlement: {
           sessionId: "music-1",
@@ -892,15 +905,23 @@ describe("applyPrismKoishiPlugin", () => {
         chargeItems: [],
         adjustments: [capAdjustment],
       }],
-      adjustments: [capAdjustment],
+      adjustments: [capAdjustment, secondCapAdjustment],
       checkoutAdjustments: [],
-      pricingCapAdjustments: [capAdjustment],
+      pricingCapAdjustments: [capAdjustment, secondCapAdjustment],
       globalCapWindows: [{
         ruleLabel: "日间",
+        windowStartedAt: "2026-07-10T02:00:00.000Z",
         currentAmount: 81,
         amountApplied: 42,
         priceCap: 69,
         paidBefore: 27,
+      }, {
+        ruleLabel: "夜间",
+        windowStartedAt: "2026-07-11T14:00:00.000Z",
+        currentAmount: 30,
+        amountApplied: 25,
+        priceCap: 79,
+        paidBefore: 54,
       }],
       assetHoldings: [{ assetCode: "paid", quantity: 185 }],
     });
@@ -919,9 +940,11 @@ describe("applyPrismKoishiPlugin", () => {
 
     expect(result).toContain("游玩时长：54分钟｜消费：3猫粮");
     expect(result).toContain(
-      "🧢 封顶\n- 日间：本次参与 81猫粮 → 计入 42猫粮（封顶 69猫粮，之前已计 27猫粮）",
+      "封顶：\n" +
+      "- 07-10 日间：81 → 42猫粮（上限69，已计27）\n" +
+      "- 07-11 夜间：30 → 25猫粮（上限79，已计54）\n\n" +
+      "计费总价：67猫粮",
     );
-    expect(result).toContain("计费总价：42猫粮");
     expect(result).not.toContain("优惠后价格：");
     expect(result).not.toContain("  └ 日间：");
   });

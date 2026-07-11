@@ -1238,18 +1238,20 @@ class PrismKoishiService {
     );
     if (cappedWindows.length > 0 || appliedCapAdjustments.length > 0) {
       lines.push("");
-      lines.push("🧢 封顶");
+      lines.push("封顶：");
       if (cappedWindows.length > 0) {
         for (const window of cappedWindows) {
           const label = firstDefined(window, "ruleLabel", "label", "name") ?? "封顶时段";
+          const startedAt = parseDateTime(window?.windowStartedAt);
+          const datedLabel = startedAt ? `${formatMD(startedAt)} ${label}` : label;
           const currentAmount = toNumber(window?.currentAmount);
           const amountApplied = toNumber(window?.amountApplied);
           const priceCap = toNumber(window?.priceCap);
           const paidBefore = toNumber(window?.paidBefore);
-          const details = [`封顶 ${formatNumber(priceCap)}${currency}`];
-          if (paidBefore > 0) details.push(`之前已计 ${formatNumber(paidBefore)}${currency}`);
+          const details = [`上限${formatNumber(priceCap)}`];
+          if (paidBefore > 0) details.push(`已计${formatNumber(paidBefore)}`);
           lines.push(
-            `- ${label}：本次参与 ${formatNumber(currentAmount)}${currency} → 计入 ${formatNumber(amountApplied)}${currency}（${details.join("，")}）`,
+            `- ${datedLabel}：${formatNumber(currentAmount)} → ${formatNumber(amountApplied)}${currency}（${details.join("，")}）`,
           );
         }
       } else {
@@ -1263,29 +1265,27 @@ class PrismKoishiService {
     const visibleCheckoutAdjustments = checkoutAdjustments.filter((adjustment) =>
       toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0)) !== 0,
     );
-    if (visibleCheckoutAdjustments.length > 0) {
-      lines.push("");
-      const hasManualAdjustment = visibleCheckoutAdjustments.some((adjustment) =>
-        cleanText(adjustment?.source).startsWith("staff.override:"),
-      );
-      lines.push(hasManualAdjustment ? "🧾 调整" : "🎟️ 优惠");
-      for (const adjustment of visibleCheckoutAdjustments) {
-        const amount = toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0));
-        const label = firstDefined(adjustment ?? {}, "label", "name", "source") ?? "优惠";
-        lines.push(`- ${label}：${formatNumber(amount)}${currency}`);
-      }
-    }
-
     lines.push("");
     const cappedTotal = Math.max(0, toNumber(subtotal) + pricingCapAdjustments.reduce(
       (sum, adjustment) => sum + toNumber(adjustment?.amount ?? 0),
       0,
     ));
     lines.push(`计费总价：${formatNumber(cappedTotal)}${currency}`);
+
+    const hasManualAdjustment = visibleCheckoutAdjustments.some((adjustment) =>
+      cleanText(adjustment?.source).startsWith("staff.override:"),
+    );
+    if (visibleCheckoutAdjustments.length > 0) {
+      lines.push("");
+      for (const adjustment of visibleCheckoutAdjustments) {
+        const amount = toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0));
+        const label = firstDefined(adjustment ?? {}, "label", "name", "source") ?? "优惠";
+        lines.push(`${label}：${formatNumber(amount)}${currency}`);
+      }
+    }
+
     if (hasNonZeroAdjustment) {
-      const hasManualAdjustment = visibleCheckoutAdjustments.some((adjustment) =>
-        cleanText(adjustment?.source).startsWith("staff.override:"),
-      );
+      if (visibleCheckoutAdjustments.length > 0) lines.push("");
       lines.push(`${hasManualAdjustment ? "调整后价格" : "优惠后价格"}：${formatNumber(total)}${currency}`);
     }
     if (hasBalance) {
@@ -1568,6 +1568,11 @@ function ensureLocal(dt: Date): Date {
 function formatHM(dt: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+}
+
+function formatMD(dt: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 
 function formatDateTime(value: any): string {
