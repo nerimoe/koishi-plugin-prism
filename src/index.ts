@@ -573,7 +573,7 @@ class PrismKoishiService {
           name = user.name;
         }
       }
-    } catch {}
+    } catch { }
     return { id, name };
   }
 
@@ -1006,7 +1006,7 @@ class PrismKoishiService {
       const source = nonMusic.length > 0 ? nonMusic : player.sessions;
       const selected = source.reduce((latest, session) =>
         !latest || sessionStartedAt(session) > sessionStartedAt(latest) ? session : latest,
-      undefined as ActiveSessionListItem | undefined);
+        undefined as ActiveSessionListItem | undefined);
       const label = selected?.label || musicLabel;
       let group = groupByLabel.get(label);
       if (!group) {
@@ -1234,7 +1234,7 @@ class PrismKoishiService {
       if (startDt && endDt) {
         const minutes = Math.floor((endDt.getTime() - startDt.getTime()) / 60_000);
         lines.push(`游玩时段：${formatHM(startDt)}-${formatHM(endDt)}`);
-        lines.push(`游玩时长：${formatDurationValue(minutes)}｜消费：${formatNumber(sTotal)}${currency}`);
+        lines.push(`游玩时长：${formatDurationValue(minutes)}｜计价：${formatNumber(sTotal)}${currency}`);
       } else if (startDt) {
         lines.push(`入场：${formatHM(startDt)}  （${status === "active" ? "计费中" : "已关闭"}）`);
       }
