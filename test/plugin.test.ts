@@ -412,7 +412,7 @@ describe("applyPrismKoishiPlugin", () => {
     };
     applyPrismKoishiPlugin(ctx, config);
 
-    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "5", senderName: "Player 5" } }, "a")).resolves.toContain("正在游玩中");
+    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "5", senderName: "Player 5" } }, "a")).resolves.toContain("补位成功");
     const result = await registered.get("list")?.action({ session: { userId: "1" } });
 
     expect(result).toContain("[总计 5 人]");
@@ -1074,5 +1074,45 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).toContain("当前余额：42猫粮");
     expect(result).toContain("预计结账后余额：12猫粮");
     expect(result).not.toContain("优惠后价格：");
+  });
+
+  it("allows player swapping (fill empty seats) mid-game without affecting others", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.resolveOrRegisterIdentity = async (input: { subject: string }) => ({
+      id: `player-${input.subject}`,
+      displayName: `Player ${input.subject}`,
+    });
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+      mahjongTables: "a : 大洋化学 = pricing-mahjong-a", mahjongTableSize: 4, client: client as any,
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
+
+    let currentSessions = [
+      { id: "session-1", playerId: "player-1", label: "大洋化学", identities: [{ provider: "qq", subject: "1" }] },
+      { id: "session-2", playerId: "player-2", label: "大洋化学", identities: [{ provider: "qq", subject: "2" }] },
+      { id: "session-3", playerId: "player-3", label: "大洋化学", identities: [{ provider: "qq", subject: "3" }] },
+      { id: "session-4", playerId: "player-4", label: "大洋化学", identities: [{ provider: "qq", subject: "4" }] },
+      { id: "entry-5", playerId: "player-5", label: "入场区间", identities: [{ provider: "qq", subject: "5" }] },
+    ];
+    client.listActiveSessions = async () => ({ sessions: currentSessions });
+
+    // Table is 4/4 full, reject player 5
+    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "5" } }, "a")).resolves.toContain("正在游玩中（4/4）");
+
+    // Player 4 leaves
+    const leaveResult = await registered.get("下桌")?.action({ session: { userId: "4" } });
+    expect(leaveResult).toContain("已离开 大洋化学");
+    currentSessions = currentSessions.filter(s => s.playerId !== "player-4");
+
+    // Player 5 joins to fill the seat (3/4 -> 4/4)
+    client.calls.length = 0;
+    const joinResult = await registered.get("上桌 [tableId]")?.action({ session: { userId: "5" } }, "a");
+    expect(joinResult).toContain("已加入 大洋化学，补位成功，麻将计费已开始。当前 4/4 人。");
+    expect(client.calls).toContainEqual(["startSessionByIdentity", expect.anything(), {
+      pricingConfigIds: ["pricing-mahjong-a"],
+      label: "大洋化学",
+    }]);
   });
 });

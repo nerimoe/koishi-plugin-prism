@@ -650,8 +650,24 @@ class PrismKoishiService {
 
     const state = this.mahjongTables.get(tableKey) ?? { waiting: [], activeSessions: {} };
     this.mahjongTables.set(tableKey, state);
-    if (Object.keys(state.activeSessions).length > 0) {
-      return `「${tableSubject}」正在游玩中（${Object.keys(state.activeSessions).length}/${this.config.mahjongTableSize ?? 4}），请等待本局结束后再上桌。`;
+    const activeCount = Object.keys(state.activeSessions).length;
+    const tableSize = this.config.mahjongTableSize ?? 4;
+    if (activeCount >= tableSize) {
+      return `「${tableSubject}」正在游玩中（${activeCount}/${tableSize}），请等待本局结束后再上桌。`;
+    }
+
+    if (activeCount > 0) {
+      const label = tableConfig.displayName || `${this.config.mahjongLabelPrefix ?? "麻将桌"} ${tableKey}`;
+      const result = (await this.client.startSessionByIdentity(this.identity(sender), {
+        pricingConfigIds: tableConfig.pricingConfigIds,
+        label,
+      })) as UncheckedRecord;
+      const session = (result?.session ?? {}) as UncheckedRecord;
+      const sessionId = String(session.id ?? "");
+      if (sessionId) {
+        state.activeSessions[playerId] = sessionId;
+      }
+      return `已加入 ${tableSubject}，补位成功，麻将计费已开始。当前 ${activeCount + 1}/${tableSize} 人。`;
     }
 
     state.waiting.push({
@@ -661,7 +677,6 @@ class PrismKoishiService {
       identity: this.identity(sender),
     });
 
-    const tableSize = this.config.mahjongTableSize ?? 4;
     if (state.waiting.length < tableSize) {
       return `已加入 ${tableSubject}，当前 ${state.waiting.length}/${tableSize} 人。`;
     }
