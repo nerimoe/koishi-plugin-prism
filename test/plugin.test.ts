@@ -212,7 +212,7 @@ describe("applyPrismKoishiPlugin", () => {
     expect(billingResult).toContain("玩家：Tester（QQ：123456）");
     expect(billingResult).toContain("⏰ 游玩时间：");
     expect(billingResult).toContain("音游区间");
-    expect(billingResult).toContain("游玩时长：1小时0分钟｜消费：22猫粮");
+    expect(billingResult).toContain("游玩时长：1小时0分钟｜计价：22猫粮");
     expect(billingResult).toContain("  └ 月卡折扣：-3猫粮");
     expect(billingResult).toContain("计费总价：25猫粮");
     expect(billingResult).toContain("优惠后价格：22猫粮");
@@ -865,7 +865,7 @@ describe("applyPrismKoishiPlugin", () => {
       session: { userId: "1015929452", senderName: "月" },
     });
 
-    expect(result).toContain("游玩时长：55分钟｜消费：12猫粮");
+    expect(result).toContain("游玩时长：55分钟｜计价：12猫粮");
     expect(result).toContain("计费总价：12猫粮\n\n老冯：-12猫粮\n\n优惠后价格：0猫粮");
     expect(result).not.toContain("🎟️");
     expect(result).not.toContain("优惠\n");
@@ -959,7 +959,7 @@ describe("applyPrismKoishiPlugin", () => {
       session: { userId: "1075979543", senderName: "哈基はち" },
     });
 
-    expect(result).toContain("游玩时长：54分钟｜消费：3猫粮");
+    expect(result).toContain("游玩时长：54分钟｜计价：3猫粮");
     expect(result).toContain(
       "封顶：\n" +
       "- 07-10 日间：81 → 42猫粮（上限69，已计27）\n" +

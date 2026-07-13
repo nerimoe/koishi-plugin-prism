@@ -761,6 +761,15 @@ class PrismKoishiService {
 
   private async performLogout(sender: Sender, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
     const result = (await this.client.confirmCheckoutByIdentity(this.identity(sender), false)) as UncheckedRecord;
+    return this.formatAndNotifyCheckout(result, sender, "✅ 退场成功 · 结算账单", bot);
+  }
+
+  private async formatAndNotifyCheckout(
+    result: UncheckedRecord,
+    sender: Sender,
+    title: string,
+    bot?: KoishiActionContext["session"]["bot"],
+  ): Promise<string> {
     const settlement = result?.playerSettlement ?? result?.settlement ?? {};
     const records = result?.settlements ?? [];
     const checkoutAdjustments = (result?.checkoutAdjustments ?? []) as UncheckedRecord[];
@@ -805,7 +814,7 @@ class PrismKoishiService {
       globalCapWindows: result?.globalCapWindows ?? [],
       assetHoldings: result?.assetHoldings ?? [],
     };
-    const receipt = await this.formatCheckoutPreview(synthetic, sender, "✅ 退场成功 · 结算账单");
+    const receipt = await this.formatCheckoutPreview(synthetic, sender, title);
     const recipients = [...new Set([...(this.config.staffUserIds ?? []), ...(this.config.logoutNotifyUserIds ?? [])])];
     if (recipients.length > 0 && bot?.broadcast) {
       await bot.broadcast(recipients, receipt);
