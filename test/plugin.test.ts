@@ -634,6 +634,37 @@ describe("applyPrismKoishiPlugin", () => {
     expect(client.calls).toContainEqual(["stopSessionByIdentity", expect.anything(), "mahjong-session"]);
   });
 
+  it("evicts orphan waiting seats when player is externally checked out", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+      mahjongTables: "a : 大洋化学 = pricing-mahjong-a", mahjongTableSize: 4, client: client as any,
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
+
+    // Player joins the waiting queue (table has 0 active, so they land in waiting).
+    // The default client mock returns playerId "player-1" from resolveOrRegisterIdentity,
+    // so we match that in the session list.
+    client.listActiveSessions = async () => ({
+      sessions: [
+        { id: "entry-session", playerId: "player-1", label: "音游区间", identities: [{ provider: "qq", subject: "77" }] },
+      ]
+    });
+    await registered.get("上桌 [tableId]")?.action({ session: { userId: "77" } }, "a");
+
+    // Confirm player appears in /list waiting area under the mahjong table
+    const listBefore = await registered.get("list")?.action({ session: { userId: "77" } });
+    expect(listBefore).toContain("大洋化学");
+
+    // Simulate external checkout: backend now reports no sessions for this player at all
+    client.listActiveSessions = async () => ({ sessions: [] });
+
+    // The next /list triggers syncMahjongTableStates which should evict the orphan
+    const listAfter = await registered.get("list")?.action({ session: { userId: "77" } });
+    expect(listAfter).not.toContain("大洋化学");
+  });
+
   it("displays remaining player count on leave mid-game", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
