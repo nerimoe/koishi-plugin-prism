@@ -376,7 +376,7 @@ describe("applyPrismKoishiPlugin", () => {
     }, -3, "Koishi 管理员扣除余额"]);
     expect(client.calls).toContainEqual(["checkoutWithOverrideByIdentity", {
       provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",
-    }, 30, "Koishi 管理员手动调价"]);
+    }, 30, "管理员调价"]);
     expect(client.calls).toContainEqual(["startSessionByIdentity", {
       provider: "qq", subject: "262661418", autoRegister: true, displayName: "262661418",
     }, undefined]);
