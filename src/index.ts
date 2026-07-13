@@ -625,6 +625,8 @@ class PrismKoishiService {
       if (!Number.isFinite(total) || total < 0) return "金额必须为非负数";
       const reason = cleanText(rawReason) || "Koishi 管理员手动调价";
       const result = (await this.client.checkoutWithOverrideByIdentity(this.identity(sender), total, reason)) as UncheckedRecord;
+      const playerId = String(result?.playerSettlement?.playerId ?? result?.settlement?.playerId ?? "");
+      if (playerId) this.removeMahjongPlayer(playerId);
       return this.formatAndNotifyCheckout(result, sender, "✅ 覆盖结账成功 · 结算账单", bot);
     }, bot);
   }
