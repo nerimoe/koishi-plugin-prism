@@ -655,6 +655,41 @@ describe("applyPrismKoishiPlugin", () => {
     expect(leaveResult).toContain("已离开 大洋化学，麻将计费已停止。当前还剩 1/4 人。");
   });
 
+  it("clears mahjong table state when a seated player uses /logout directly", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    const config: PrismKoishiPluginConfig = {
+      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+      mahjongTables: "a : 大洋化学 = pricing-mahjong-a", mahjongTableSize: 4, client: client as any,
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
+
+    // Player is seated at the table (active session)
+    client.listActiveSessions = async () => ({
+      sessions: [
+        { id: "session-99", playerId: "player-99", label: "大洋化学", identities: [{ provider: "qq", subject: "99" }] },
+      ]
+    });
+
+    // Trigger a /list so the table state is synced into memory
+    await registered.get("list")?.action({ session: { userId: "99" } });
+
+    // Now mock checkout result returning the same playerId
+    client.confirmCheckoutByIdentity = async () => ({
+      playerSettlement: { playerId: "player-99", subtotal: 0, total: 0, status: "settled", settledAt: new Date() },
+      settlements: [],
+      assetHoldings: [],
+    });
+
+    // Player logs out directly without calling /下桌 first
+    await registered.get("logout")?.action({ session: { userId: "99", senderName: "TestPlayer", messageId: "m1" } });
+
+    // After logout, /list should no longer show them on the table
+    client.listActiveSessions = async () => ({ sessions: [] });
+    const listAfter = await registered.get("list")?.action({ session: { userId: "99" } });
+    expect(listAfter).not.toContain("大洋化学");
+  });
+
   it("does not register legacy admin commands", () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);

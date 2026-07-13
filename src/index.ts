@@ -761,6 +761,8 @@ class PrismKoishiService {
 
   private async performLogout(sender: Sender, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
     const result = (await this.client.confirmCheckoutByIdentity(this.identity(sender), false)) as UncheckedRecord;
+    const playerId = String(result?.playerSettlement?.playerId ?? result?.settlement?.playerId ?? "");
+    if (playerId) this.removeMahjongPlayer(playerId);
     return this.formatAndNotifyCheckout(result, sender, "✅ 退场成功 · 结算账单", bot);
   }
 
@@ -1067,6 +1069,13 @@ class PrismKoishiService {
       if (state.waiting.some((seat) => seat.playerId === playerId)) return tableId;
     }
     return null;
+  }
+
+  private removeMahjongPlayer(playerId: string): void {
+    for (const state of this.mahjongTables.values()) {
+      delete state.activeSessions[playerId];
+      state.waiting = state.waiting.filter((seat) => seat.playerId !== playerId);
+    }
   }
 
   private mahjongTableConfigs(): Map<string, MahjongTableConfig> {
