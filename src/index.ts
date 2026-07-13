@@ -623,7 +623,7 @@ class PrismKoishiService {
     return this.withTarget(actor, targetSubject, async (sender) => {
       const total = Number(rawAmount);
       if (!Number.isFinite(total) || total < 0) return "金额必须为非负数";
-      const reason = cleanText(rawReason) || "Koishi 管理员手动调价";
+      const reason = cleanText(rawReason) || "管理员调价";
       const result = (await this.client.checkoutWithOverrideByIdentity(this.identity(sender), total, reason)) as UncheckedRecord;
       const playerId = String(result?.playerSettlement?.playerId ?? result?.settlement?.playerId ?? "");
       if (playerId) this.removeMahjongPlayer(playerId);
@@ -1316,9 +1316,11 @@ class PrismKoishiService {
       }
     }
 
-    const visibleCheckoutAdjustments = checkoutAdjustments.filter((adjustment) =>
-      toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0)) !== 0,
-    );
+    const visibleCheckoutAdjustments = checkoutAdjustments.filter((adjustment) => {
+      const amount = toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0));
+      const isOverride = cleanText(adjustment?.source).startsWith("staff.override:");
+      return amount !== 0 && !isOverride;
+    });
     lines.push("");
     const cappedTotal = Math.max(0, toNumber(subtotal) + pricingCapAdjustments.reduce(
       (sum, adjustment) => sum + toNumber(adjustment?.amount ?? 0),
@@ -1326,7 +1328,7 @@ class PrismKoishiService {
     ));
     lines.push(`计费总价：${formatNumber(cappedTotal)}${currency}`);
 
-    const hasManualAdjustment = visibleCheckoutAdjustments.some((adjustment) =>
+    const hasManualAdjustment = checkoutAdjustments.some((adjustment) =>
       cleanText(adjustment?.source).startsWith("staff.override:"),
     );
     if (visibleCheckoutAdjustments.length > 0) {
