@@ -817,7 +817,8 @@ class PrismKoishiService {
     const receipt = await this.formatCheckoutPreview(synthetic, sender, title);
     const recipients = [...new Set([...(this.config.staffUserIds ?? []), ...(this.config.logoutNotifyUserIds ?? [])])];
     if (recipients.length > 0 && bot?.broadcast) {
-      await bot.broadcast(recipients, receipt);
+      const channelIds = recipients.map((id) => (id.includes(":") ? id : `private:${id}`));
+      await bot.broadcast(channelIds, receipt);
     }
     return receipt;
   }

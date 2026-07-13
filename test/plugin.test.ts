@@ -261,7 +261,7 @@ describe("applyPrismKoishiPlugin", () => {
     });
     expect(logoutResult).toContain("quote");
     expect(broadcasts).toHaveLength(1);
-    expect(broadcasts[0][0]).toEqual(["staff-1", "audit-1"]);
+    expect(broadcasts[0][0]).toEqual(["private:staff-1", "private:audit-1"]);
     expect(broadcasts[0][1]).toContain("✅ 退场成功 · 结算账单");
     expect(broadcasts[0][1]).toContain("玩家：Tester（QQ：123456）");
     expect(broadcasts[0][1]).not.toContain("quote");
@@ -302,7 +302,7 @@ describe("applyPrismKoishiPlugin", () => {
 
     expect(overwriteResult).toContain("quote");
     expect(broadcasts).toHaveLength(1);
-    expect(broadcasts[0][0]).toEqual(["staff-1", "audit-1"]);
+    expect(broadcasts[0][0]).toEqual(["private:staff-1", "private:audit-1"]);
     expect(broadcasts[0][1]).toContain("✅ 覆盖结账成功 · 结算账单");
     expect(broadcasts[0][1]).not.toContain("quote");
   });
