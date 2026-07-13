@@ -267,6 +267,46 @@ describe("applyPrismKoishiPlugin", () => {
     expect(broadcasts[0][1]).not.toContain("quote");
   });
 
+  it("notifies configured logout recipients when overwrite command is executed", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    const broadcasts: Array<[string[], string]> = [];
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      enableStaffCommands: true,
+      staffUserIds: ["staff-1"],
+      logoutNotifyUserIds: ["staff-1", "audit-1"],
+      client: client as any,
+    });
+    const bot = {
+      async broadcast(userIds: string[], content: string) {
+        broadcasts.push([userIds, content]);
+      },
+    };
+
+    client.checkoutWithOverrideByIdentity = async () => {
+      return {
+        playerSettlement: { playerId: "player-1", subtotal: 10, total: 30, status: "settled", settledAt: new Date() },
+        settlements: [],
+        assetHoldings: [],
+      };
+    };
+
+    const overwriteResult = await registered.get("overwrite <target:user> <amount:number> [reason:text]")?.action({
+      session: { userId: "staff-1", senderName: "Admin", messageId: "message-3", bot },
+    }, "target-qq", "30");
+
+    expect(overwriteResult).toContain("quote");
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0][0]).toEqual(["staff-1", "audit-1"]);
+    expect(broadcasts[0][1]).toContain("✅ 覆盖结账成功 · 结算账单");
+    expect(broadcasts[0][1]).not.toContain("quote");
+  });
+
   it("coalesces concurrent logout commands for the same player", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
@@ -326,7 +366,7 @@ describe("applyPrismKoishiPlugin", () => {
     await expect(registered.get("login [target:user]")?.action(playerContext, "target-qq")).resolves.toBe("权限不足");
     await expect(registered.get("add <target:user> <amount:number>")?.action(adminContext, "target-qq", "10")).resolves.toContain("已为用户");
     await expect(registered.get("del <target:user> <amount:number>")?.action(adminContext, "target-qq", "3")).resolves.toContain("已为用户");
-    await expect(registered.get("overwrite <target:user> <amount:number> [reason:text]")?.action(adminContext, "target-qq", "30")).resolves.toContain("已为用户");
+    await expect(registered.get("overwrite <target:user> <amount:number> [reason:text]")?.action(adminContext, "target-qq", "30")).resolves.toContain("覆盖结账成功");
 
     expect(client.calls).toContainEqual(["adjustWalletByIdentity", {
       provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",

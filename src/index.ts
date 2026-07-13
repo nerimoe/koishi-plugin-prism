@@ -624,8 +624,8 @@ class PrismKoishiService {
       const total = Number(rawAmount);
       if (!Number.isFinite(total) || total < 0) return "金额必须为非负数";
       const reason = cleanText(rawReason) || "Koishi 管理员手动调价";
-      await this.client.checkoutWithOverrideByIdentity(this.identity(sender), total, reason);
-      return `✅ 已为用户 ${formatPlayerReference(sender, this.config.provider)} 覆盖结账为 ${formatNumber(total)} ${this.config.currencyName}`;
+      const result = (await this.client.checkoutWithOverrideByIdentity(this.identity(sender), total, reason)) as UncheckedRecord;
+      return this.formatAndNotifyCheckout(result, sender, "✅ 覆盖结账成功 · 结算账单", bot);
     }, bot);
   }
 
