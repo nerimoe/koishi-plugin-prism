@@ -560,6 +560,36 @@ describe("applyPrismKoishiPlugin", () => {
     expect(redeemResult).toContain("兑换成功");
   });
 
+  it("handles command execution failure feedback from server", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const ctx = createMockKoishiContext(registered);
+    const client = createDefaultClient();
+    applyPrismKoishiPlugin(ctx, {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    // Mock execution error from server
+    client.requestDeviceCommandByIdentity = async () => ({
+      action: {
+        id: "command-fail",
+        status: "expired",
+        payload: {
+          executorFailure: {
+            message: "设备不存在",
+          },
+        },
+      },
+    });
+
+    const failedResult = await registered.get("on <deviceId>")?.action({ session: { userId: "123" } }, "ai-1");
+    expect(failedResult).toContain("❌ 执行失败：设备不存在");
+  });
+
   it("rejects mahjong seating before the player enters", async () => {
     const client = createDefaultClient();
     client.listActiveSessions = async () => ({ sessions: [] });

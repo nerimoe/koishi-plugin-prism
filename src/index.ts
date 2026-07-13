@@ -887,11 +887,13 @@ class PrismKoishiService {
     if (!deviceId) return commandUsage("prism_coin");
     const { value, error } = parsePositiveInt(rawCount, "prism_coin", "数量", 1);
     if (error) return error;
-    await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
+    const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
       type: "coin",
       target: { kind: "game_machine", id: deviceId },
       payload: { count: value },
     });
+    const failure = this.getCommandFailureMessage(result);
+    if (failure) return `❌ 执行失败：${failure}`;
     return `🪙 已为 ${deviceId} 投入 ${value} 个币`;
   }
 
@@ -899,11 +901,13 @@ class PrismKoishiService {
     const deviceId = cleanText(rawDeviceId);
     const subject = cleanText(rawSubject);
     if (!deviceId || !subject) return commandUsage("prism_scan");
-    await this.client.requestScanByIdentity(this.identity(sender), {
+    const result = await this.client.requestScanByIdentity(this.identity(sender), {
       deviceId,
       provider: this.config.defaultScanProvider || "aime",
       subject,
     });
+    const failure = this.getCommandFailureMessage(result);
+    if (failure) return `❌ 执行失败：${failure}`;
     return `💳 使用尾号为 ${subject.slice(-4)} 的卡刷卡成功`;
   }
 
@@ -971,14 +975,24 @@ class PrismKoishiService {
   /* ---------------------------- helpers ---------------------------------- */
 
   private async power(sender: Sender, deviceId: string, state: string): Promise<string> {
-    await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
+    const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
       type: state === "on" ? "power.on" : "power.off",
       target: { kind: "facility", id: deviceId },
       payload: { state },
     });
+    const failure = this.getCommandFailureMessage(result);
+    if (failure) return `❌ 执行失败：${failure}`;
     if (state === "on") return `✅ ${deviceId} 启动成功`;
     if (deviceId === "all") return `🛑 全部机器关闭成功`;
     return `🛑 ${deviceId} 关闭成功`;
+  }
+
+  private getCommandFailureMessage(result: any): string | null {
+    const action = result?.action;
+    if (action?.status === "expired" || action?.status === "rejected") {
+      return action.payload?.executorFailure?.message || "命令执行被拒绝或超时";
+    }
+    return null;
   }
 
   private async resolvePlatformName(subject: string): Promise<string | null> {
