@@ -69,8 +69,8 @@ pricingConfigIds: [pricing-mahjong-a]
 * `show [deviceId]` - 查看设备电源与连接状态。
 * `history` - 查看自己的历史游玩记录。
 * `lock` - 发送开门指令。
-* `on <deviceId>` - 请求启动指定设备电源。
-* `off <deviceId>` - 请求关闭指定设备电源。
+* `on <deviceId>` - 请求启动指定设备电源，成功回复使用后端返回的设备名称。
+* `off <deviceId>` - 请求关闭指定设备电源，成功回复使用后端返回的设备名称；`all` 显示为“所有设备”。
 * `coin <deviceId> [count]` - 请求向指定设备投币指定枚数。
 * `scan <deviceId> <subject>` - 请求向设备发送模拟刷卡。
 * `redeem <code>` - 兑换礼物码。

@@ -590,6 +590,31 @@ describe("applyPrismKoishiPlugin", () => {
     expect(failedResult).toContain("❌ 执行失败：设备不存在");
   });
 
+  it("uses the backend device label for power replies without special-casing all", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.requestDeviceCommandByIdentity = async () => ({
+      action: {
+        status: "acked",
+        payload: { deviceLabel: "所有设备" },
+      },
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const onResult = await registered.get("on <deviceId>")?.action({ session: { userId: "123" } }, "all");
+    const offResult = await registered.get("off <deviceId>")?.action({ session: { userId: "123" } }, "all");
+
+    expect(onResult).toBe("✅ 所有设备 启动成功");
+    expect(offResult).toBe("🛑 所有设备 关闭成功");
+  });
+
   it("rejects mahjong seating before the player enters", async () => {
     const client = createDefaultClient();
     client.listActiveSessions = async () => ({ sessions: [] });

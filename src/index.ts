@@ -982,9 +982,8 @@ class PrismKoishiService {
     });
     const failure = this.getCommandFailureMessage(result);
     if (failure) return `❌ 执行失败：${failure}`;
-    if (state === "on") return `✅ ${deviceId} 启动成功`;
-    if (deviceId === "all") return `🛑 全部机器关闭成功`;
-    return `🛑 ${deviceId} 关闭成功`;
+    const displayName = result?.action?.payload?.deviceLabel || deviceId;
+    return state === "on" ? `✅ ${displayName} 启动成功` : `🛑 ${displayName} 关闭成功`;
   }
 
   private getCommandFailureMessage(result: any): string | null {
