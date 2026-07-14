@@ -8,7 +8,7 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   baseUrl: Schema.string().description("PRiSM 后端 API Base URL"),
   integrationToken: Schema.string().role("secret").description("集成 API Token"),
   currencyName: Schema.string().default("猫粮").description("代币名称"),
-  defaultDoorDeviceId: Schema.string().default("front-door").description("默认开门设备ID"),
+  defaultDoorDeviceId: Schema.string().default("front-door").description("默认开门设备名或别名"),
   defaultScanProvider: Schema.string().default("aime").description("默认刷卡提供商"),
   loginPricingConfigIds: Schema.array(Schema.string()).default([]).description("默认入场绑定的计费策略ID"),
   loginSessionLabel: Schema.string().default("音游区间").description("默认入场场次标签 (防重复入场)"),
@@ -120,8 +120,8 @@ const USAGE: Record<string, string> = {
   mahjong_leave: "/下桌",
   mahjong_list: "/麻将列表",
   api_benchmark: "/api测速 [次数]",
-  prism_on: "/prism on <设备ID>",
-  prism_off: "/prism off <设备ID|all>",
+  prism_on: "/prism on <设备名|别名|all>",
+  prism_off: "/prism off <设备名|别名|all>",
   prism_coin: "/prism coin <设备ID> [数量]",
   prism_scan: "/prism scan <设备ID> <卡号>",
   prism_redeem: "/prism redeem <兑换码>",
@@ -255,12 +255,12 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.lock(await service.sender(context)),
   ));
 
-  ctx.command("on <deviceId>", "请求启动指定设备电源").action(wrap(async (context, deviceId) =>
-    service.powerOn(await service.sender(context), deviceId),
+  ctx.command("on <deviceRef>", "请求启动指定设备电源").action(wrap(async (context, deviceRef) =>
+    service.powerOn(await service.sender(context), deviceRef),
   ));
 
-  ctx.command("off <deviceId>", "请求关闭指定设备电源").action(wrap(async (context, deviceId) =>
-    service.powerOff(await service.sender(context), deviceId),
+  ctx.command("off <deviceRef>", "请求关闭指定设备电源").action(wrap(async (context, deviceRef) =>
+    service.powerOff(await service.sender(context), deviceRef),
   ));
 
   ctx.command("coin <deviceId> [count]", "请求向指定设备投币").action(
@@ -865,21 +865,21 @@ class PrismKoishiService {
   async lock(sender: Sender): Promise<string> {
     await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
       type: "door.open",
-      target: { kind: "facility", id: this.config.defaultDoorDeviceId },
+      target: { kind: "facility", ref: this.config.defaultDoorDeviceId },
     });
     return "🔑 门锁指令已发送";
   }
 
-  async powerOn(sender: Sender, rawDeviceId: string): Promise<string> {
-    const deviceId = cleanText(rawDeviceId);
-    if (!deviceId) return commandUsage("prism_on");
-    return this.power(sender, deviceId, "on");
+  async powerOn(sender: Sender, rawDeviceRef: string): Promise<string> {
+    const deviceRef = cleanText(rawDeviceRef);
+    if (!deviceRef) return commandUsage("prism_on");
+    return this.power(sender, deviceRef, "on");
   }
 
-  async powerOff(sender: Sender, rawDeviceId: string): Promise<string> {
-    const deviceId = cleanText(rawDeviceId);
-    if (!deviceId) return commandUsage("prism_off");
-    return this.power(sender, deviceId, "off");
+  async powerOff(sender: Sender, rawDeviceRef: string): Promise<string> {
+    const deviceRef = cleanText(rawDeviceRef);
+    if (!deviceRef) return commandUsage("prism_off");
+    return this.power(sender, deviceRef, "off");
   }
 
   async coin(sender: Sender, rawDeviceId: string, rawCount: string): Promise<string> {
@@ -974,16 +974,16 @@ class PrismKoishiService {
 
   /* ---------------------------- helpers ---------------------------------- */
 
-  private async power(sender: Sender, deviceId: string, state: string): Promise<string> {
+  private async power(sender: Sender, deviceRef: string, state: string): Promise<string> {
     const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
       type: state === "on" ? "power.on" : "power.off",
-      target: { kind: "facility", id: deviceId },
+      target: { kind: "facility", ref: deviceRef },
       payload: { state },
     });
     const failure = this.getCommandFailureMessage(result);
     if (failure) return `❌ 执行失败：${failure}`;
-    const displayName = result?.action?.payload?.deviceLabel || deviceId;
-    return state === "on" ? `✅ ${displayName} 启动成功` : `🛑 ${displayName} 关闭成功`;
+    const deviceLabel = result.action.payload.deviceLabel;
+    return state === "on" ? `✅ ${deviceLabel} 启动成功` : `🛑 ${deviceLabel} 关闭成功`;
   }
 
   private getCommandFailureMessage(result: any): string | null {

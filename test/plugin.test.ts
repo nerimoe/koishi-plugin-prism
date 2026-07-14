@@ -97,7 +97,13 @@ function createDefaultClient() {
     },
     async requestDeviceCommandByIdentity(input: unknown, command: unknown) {
       calls.push(["requestDeviceCommandByIdentity", input, command]);
-      return { command: { id: "command-1" } };
+      return {
+        action: {
+          id: "command-1",
+          status: "acked",
+          payload: { deviceLabel: "maimai" },
+        },
+      };
     },
     async requestScanByIdentity(input: unknown, scan: unknown) {
       calls.push(["requestScanByIdentity", input, scan]);
@@ -184,8 +190,8 @@ describe("applyPrismKoishiPlugin", () => {
       "show [deviceId]",
       "history [target:user]",
       "lock",
-      "on <deviceId>",
-      "off <deviceId>",
+      "on <deviceRef>",
+      "off <deviceRef>",
       "coin <deviceId> [count]",
       "scan <deviceId> <subject>",
       "redeem <code>",
@@ -550,8 +556,17 @@ describe("applyPrismKoishiPlugin", () => {
     expect(list).toContain("maimai: on");
     const res = await registered.get("show [deviceId]")?.action({ session: { userId: "123456" } }, "ai-1");
     expect(res).toContain("maimai: on");
-    const onResult = await registered.get("on <deviceId>")?.action({ session: { userId: "123456" } }, "ai-1");
-    expect(onResult).toContain("ai-1 启动成功");
+    const onResult = await registered.get("on <deviceRef>")?.action({ session: { userId: "123456" } }, "ai-1");
+    expect(onResult).toContain("maimai 启动成功");
+    expect(client.calls).toContainEqual([
+      "requestDeviceCommandByIdentity",
+      expect.anything(),
+      {
+        type: "power.on",
+        target: { kind: "facility", ref: "ai-1" },
+        payload: { state: "on" },
+      },
+    ]);
     const coinResult = await registered.get("coin <deviceId> [count]")?.action({ session: { userId: "123456" } }, "ai-1", "2");
     expect(coinResult).toContain("2 个币");
     const scanResult = await registered.get("scan <deviceId> <subject>")?.action({ session: { userId: "123456" } }, "aime-1", "card-4321");
@@ -586,7 +601,7 @@ describe("applyPrismKoishiPlugin", () => {
       },
     });
 
-    const failedResult = await registered.get("on <deviceId>")?.action({ session: { userId: "123" } }, "ai-1");
+    const failedResult = await registered.get("on <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1");
     expect(failedResult).toContain("❌ 执行失败：设备不存在");
   });
 
@@ -608,8 +623,8 @@ describe("applyPrismKoishiPlugin", () => {
       client: client as any,
     });
 
-    const onResult = await registered.get("on <deviceId>")?.action({ session: { userId: "123" } }, "all");
-    const offResult = await registered.get("off <deviceId>")?.action({ session: { userId: "123" } }, "all");
+    const onResult = await registered.get("on <deviceRef>")?.action({ session: { userId: "123" } }, "all");
+    const offResult = await registered.get("off <deviceRef>")?.action({ session: { userId: "123" } }, "all");
 
     expect(onResult).toBe("✅ 所有设备 启动成功");
     expect(offResult).toBe("🛑 所有设备 关闭成功");

@@ -25,7 +25,7 @@
 | `autoRegister` | `boolean` | `true` | 当玩家未注册时，是否在首次操作（如入场/查钱包）时自动在 PRiSM 中创建新玩家。 |
 | `loginPricingConfigIds` | `string[]` | `[]` | 默认入场计费规则 ID 列表。 |
 | `loginSessionLabel` | `string` | `"音游区间"` | 默认入场会话的标签文本。后端会按该标签对同一玩家的活跃会话去重，重复入场会被拒绝并提示。留空则不启用去重。 |
-| `defaultDoorDeviceId` | `string` | - | 默认门锁设备的 ID，用于开门指令。 |
+| `defaultDoorDeviceId` | `string` | - | 默认门锁设备的名称或别名，用于开门指令；配置项名称仅为兼容旧配置而保留。 |
 | `defaultScanProvider` | `string` | `"aime"` | 默认模拟刷卡时的读卡器协议提供商（如 `"aime"`）。 |
 | `currencyName` | `string` | `"金币"` | 账户货币在显示时的自定义单位名称。 |
 | `resolveDisplayName` | `function` | - | 可选。自定义用于获取群内昵称作为玩家注册名的异步逻辑。 |
@@ -69,8 +69,8 @@ pricingConfigIds: [pricing-mahjong-a]
 * `show [deviceId]` - 查看设备电源与连接状态。
 * `history` - 查看自己的历史游玩记录。
 * `lock` - 发送开门指令。
-* `on <deviceId>` - 请求启动指定设备电源，成功回复使用后端返回的设备名称。
-* `off <deviceId>` - 请求关闭指定设备电源，成功回复使用后端返回的设备名称；`all` 显示为“所有设备”。
+* `on <deviceRef>` - 使用后台设备名称、别名或 `all` 请求启动电源；不接受 Home Assistant entity ID，成功回复使用后端返回的设备名称。
+* `off <deviceRef>` - 使用后台设备名称、别名或 `all` 请求关闭电源；不接受 Home Assistant entity ID，`all` 显示为“所有设备”。
 * `coin <deviceId> [count]` - 请求向指定设备投币指定枚数。
 * `scan <deviceId> <subject>` - 请求向设备发送模拟刷卡。
 * `redeem <code>` - 兑换礼物码。
