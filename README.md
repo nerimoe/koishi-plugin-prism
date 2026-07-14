@@ -46,7 +46,7 @@
 * `history` - 查看自己的历史游玩记录。
 * `lock` - 发送开门指令。
 * `on <deviceId>` - 请求启动指定设备电源。
-* `off <deviceId>` - 请求关闭指定设备电源。
+* `off <deviceId|all>` - 请求关闭指定设备电源；传入 `all` 时关闭后台配置的所有 Home Assistant 设备。
 * `coin <deviceId> [count]` - 请求向指定设备投币指定枚数。
 * `scan <deviceId> <subject>` - 请求向设备发送模拟刷卡。
 * `redeem <code>` - 兑换礼物码。

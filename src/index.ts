@@ -896,14 +896,14 @@ class PrismKoishiService {
   /* ---------------------------- helpers ---------------------------------- */
 
   private async power(sender: Sender, deviceId: string, state: string): Promise<string> {
-    await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
+    const result = (await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
       type: state === "on" ? "power.on" : "power.off",
       target: { kind: "facility", id: deviceId },
       payload: { state },
-    });
-    if (state === "on") return `✅ ${deviceId} 启动成功`;
-    if (deviceId === "all") return `🛑 全部机器关闭成功`;
-    return `🛑 ${deviceId} 关闭成功`;
+    })) as UncheckedRecord;
+    const label = typeof result?.action?.label === "string" ? result.action.label : "设备";
+    if (state === "on") return `✅ ${label} 启动成功`;
+    return `🛑 ${label} 关闭成功`;
   }
 
   private async resolvePlatformName(subject: string): Promise<string | null> {

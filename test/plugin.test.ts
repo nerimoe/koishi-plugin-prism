@@ -97,7 +97,8 @@ function createDefaultClient() {
     },
     async requestDeviceCommandByIdentity(input: unknown, command: unknown) {
       calls.push(["requestDeviceCommandByIdentity", input, command]);
-      return { command: { id: "command-1" } };
+      const targetId = (command as any)?.target?.id;
+      return { action: { id: "command-1", label: targetId === "all" ? "所有设备" : "测试设备" } };
     },
     async requestScanByIdentity(input: unknown, scan: unknown) {
       calls.push(["requestScanByIdentity", input, scan]);
@@ -258,7 +259,16 @@ describe("applyPrismKoishiPlugin", () => {
     const res = await registered.get("show [deviceId]")?.action({ session: { userId: "123456" } }, "ai-1");
     expect(res).toContain("maimai: on");
     const onResult = await registered.get("on <deviceId>")?.action({ session: { userId: "123456" } }, "ai-1");
-    expect(onResult).toContain("ai-1 启动成功");
+    expect(onResult).toContain("测试设备 启动成功");
+    const allOffResult = await registered.get("off <deviceId>")?.action({ session: { userId: "123456" } }, "all");
+    expect(allOffResult).toBe("🛑 所有设备 关闭成功");
+    const allOffCall = client.calls.at(-1);
+    expect(allOffCall?.[0]).toBe("requestDeviceCommandByIdentity");
+    expect(allOffCall?.[2]).toEqual({
+      type: "power.off",
+      target: { kind: "facility", id: "all" },
+      payload: { state: "off" },
+    });
     const coinResult = await registered.get("coin <deviceId> [count]")?.action({ session: { userId: "123456" } }, "ai-1", "2");
     expect(coinResult).toContain("2 个币");
     const scanResult = await registered.get("scan <deviceId> <subject>")?.action({ session: { userId: "123456" } }, "aime-1", "card-4321");
