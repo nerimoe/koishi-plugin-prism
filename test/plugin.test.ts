@@ -999,6 +999,64 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).not.toContain("预计结账后余额：");
   });
 
+  it("renders negative session contributions before flooring the unified total", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.confirmCheckoutByIdentity = async () => ({
+      playerSettlement: { playerId: "player-1", subtotal: 7, total: 7 },
+      settlements: [
+        {
+          settlement: {
+            sessionId: "session-charge",
+            label: "标准区间",
+            startedAt: "2026-07-10T10:00:00.000Z",
+            settledAt: "2026-07-10T11:00:00.000Z",
+            subtotal: 10,
+            total: 10,
+          },
+          chargeItems: [{ label: "标准计费", amount: 10 }],
+          adjustments: [],
+        },
+        {
+          settlement: {
+            sessionId: "session-discount",
+            label: "每小时优惠三元",
+            startedAt: "2026-07-10T10:00:00.000Z",
+            settledAt: "2026-07-10T11:00:00.000Z",
+            subtotal: -3,
+            total: -3,
+          },
+          chargeItems: [{ label: "相对优惠", amount: -3 }],
+          adjustments: [],
+        },
+      ],
+      chargeItems: [],
+      adjustments: [],
+      checkoutAdjustments: [],
+      pricingCapAdjustments: [],
+      assetHoldings: [{ assetCode: "paid", quantity: 93 }],
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const result = await registered.get("logout [target:user]")?.action({
+      session: { userId: "123456", senderName: "Tester" },
+    });
+
+    expect(result).toContain("标准区间\n游玩时段：");
+    expect(result).toContain("游玩时长：1小时0分钟｜计价：10猫粮");
+    expect(result).toContain("每小时优惠三元\n游玩时段：");
+    expect(result).toContain("游玩时长：1小时0分钟｜计价：-3猫粮");
+    expect(result).toContain("计费总价：7猫粮");
+    expect(result).not.toContain("计价：0猫粮");
+  });
+
   it("renders a unified discount outside the session it was persisted with", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();

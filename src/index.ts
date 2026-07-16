@@ -796,10 +796,10 @@ class PrismKoishiService {
         endedAt: s.endedAt ?? s.settledAt,
         status: "closed",
         subtotal: sessionSubtotal,
-        total: Math.max(0, sessionSubtotal + sessionAdjustments.reduce(
+        total: sessionSubtotal + sessionAdjustments.reduce(
           (sum, adjustment) => sum + toNumber(adjustment?.amount ?? 0),
           0,
-        )),
+        ),
         chargeItems: rec?.chargeItems ?? [],
         adjustments: sessionAdjustments,
       };
