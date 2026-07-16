@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { applyPrismKoishiPlugin, PrismBotClientError, resolveMahjongTableConfigs, type PrismKoishiPluginConfig } from "../src";
+import { applyPrismKoishiPlugin, PrismBotClientError, resolveMahjongTableConfigs, version, type PrismKoishiPluginConfig } from "../src";
 
 type RegisteredCommand = {
   description: string;
@@ -26,6 +26,10 @@ function createDefaultClient() {
   const calls: any[] = [];
   return {
     calls,
+    async getVersion() {
+      calls.push(["getVersion"]);
+      return { service: "prism-api", version: "1.0.0", revision: "backend123" };
+    },
     async resolveOrRegisterIdentity(input: unknown) {
       calls.push(["resolveOrRegisterIdentity", input]);
       return { id: "player-1", displayName: "Neri", status: "active" };
@@ -46,8 +50,11 @@ function createDefaultClient() {
       return {
         settlementPreview: {
           playerId: "player-1",
+          sessionIds: ["session-1"],
           subtotal: 25,
           total: 22,
+          status: "preview",
+          previewedAt: "2026-06-07T19:00:00.000Z",
         },
         sessionPreviews: [
           {
@@ -58,20 +65,36 @@ function createDefaultClient() {
             status: "closed",
             subtotal: 25,
             total: 22,
+            chargeItems: [{ label: "标准计费", amount: 25 }],
             adjustments: [{ label: "月卡折扣", amount: -3 }],
           },
         ],
+        chargeItems: [{ label: "标准计费", amount: 25 }],
         adjustments: [{ label: "月卡折扣", amount: -3 }],
+        checkoutAdjustments: [{ label: "月卡折扣", amount: -3 }],
+        pricingCapAdjustments: [],
         assetHoldings: [{ assetCode: "paid", quantity: 100 }],
+        globalCapWindows: [],
       };
     },
     async confirmCheckoutByIdentity(input: unknown) {
       calls.push(["confirmCheckoutByIdentity", input]);
       return {
-        settlement: { playerId: "player-1", subtotal: 25, total: 22 },
+        playerSettlement: {
+          playerId: "player-1",
+          sessionIds: ["session-1"],
+          subtotal: 25,
+          total: 22,
+          status: "settled",
+          settledAt: "2026-06-07T19:00:00.000Z",
+        },
         settlements: [],
         chargeItems: [],
         adjustments: [],
+        checkoutAdjustments: [],
+        pricingCapAdjustments: [],
+        globalCapWindows: [],
+        assetLedgerEntries: [],
         assetHoldings: [{ assetCode: "paid", quantity: 78 }],
       };
     },
@@ -82,18 +105,19 @@ function createDefaultClient() {
     async getWalletByIdentity(input: unknown) {
       calls.push(["getWalletByIdentity", input]);
       return {
-        total: { available: 100, all: 100 },
-        paid: { available: 60 },
-        free: { available: 40 },
+        wallet: [
+          { assetCode: "currency.paid", quantity: 60 },
+          { assetCode: "currency.free", quantity: 40 },
+        ],
       };
     },
     async getAssetsByIdentity(input: unknown) {
       calls.push(["getAssetsByIdentity", input]);
-      return { holdings: [{ assetName: "Monthly pass", quantity: 1, expireAt: null }] };
+      return { holdings: [{ assetName: "Monthly pass", quantity: 1, expiresAt: null }] };
     },
     async getSessionHistoryByIdentity(input: unknown) {
       calls.push(["getSessionHistoryByIdentity", input]);
-      return { sessions: [{ sessionId: "session-1", createdAt: "2026-06-07T18:00:00.000Z", closedAt: "2026-06-07T19:00:00.000Z", total: 25 }] };
+      return { sessions: [{ sessionId: "session-1", startedAt: "2026-06-07T18:00:00.000Z", endedAt: "2026-06-07T19:00:00.000Z", total: 25 }] };
     },
     async requestDeviceCommandByIdentity(input: unknown, command: unknown) {
       calls.push(["requestDeviceCommandByIdentity", input, command]);
@@ -111,7 +135,7 @@ function createDefaultClient() {
     },
     async redeemCodeByIdentity(input: unknown, code: string) {
       calls.push(["redeemCodeByIdentity", input, code]);
-      return { holdings: [{ assetName: "Coupon", quantity: 1 }] };
+      return { grantedAssets: [{ assetName: "Coupon", quantity: 1 }] };
     },
     async listActiveSessions() {
       calls.push(["listActiveSessions"]);
@@ -142,19 +166,35 @@ function createDefaultClient() {
     },
     async checkoutWithOverrideByIdentity(identity: unknown, total: number, reason: string) {
       calls.push(["checkoutWithOverrideByIdentity", identity, total, reason]);
-      return { settlement: { total } };
+      return {
+        playerSettlement: {
+          playerId: "player-1",
+          sessionIds: ["session-1"],
+          subtotal: total,
+          total,
+          status: "settled",
+          settledAt: "2026-06-07T19:00:00.000Z",
+        },
+        settlements: [],
+        chargeItems: [],
+        adjustments: [],
+        checkoutAdjustments: [],
+        pricingCapAdjustments: [],
+        globalCapWindows: [],
+        assetLedgerEntries: [],
+        assetHoldings: [],
+      };
     },
   };
 }
 
 describe("applyPrismKoishiPlugin", () => {
-  it("prefers structured mahjong table configuration over legacy text", () => {
+  it("resolves structured mahjong table configuration", () => {
     const tables = resolveMahjongTableConfigs([
       { displayName: "雀友四口麻将机", aliases: ["a", "四麻A"], pricingConfigIds: ["pricing-a"] },
-    ], "legacy = pricing-legacy", "麻将桌");
+    ]);
     expect(tables.get("a")).toMatchObject({ tableId: "雀友四口麻将机", displayName: "雀友四口麻将机", pricingConfigIds: ["pricing-a"] });
     expect(tables.get("四麻A")?.tableId).toBe("雀友四口麻将机");
-    expect(tables.has("legacy")).toBe(false);
   });
   it("registers all player commands and basic flows work", async () => {
     const registered = new Map<string, RegisteredCommand>();
@@ -185,6 +225,7 @@ describe("applyPrismKoishiPlugin", () => {
       "billing [target:user]",
       "wallet [target:user]",
       "api测速 [count:number]",
+      "versions",
       "items [target:user]",
       "list",
       "show [deviceId]",
@@ -234,6 +275,59 @@ describe("applyPrismKoishiPlugin", () => {
 
     const benchmark = await registered.get("api测速 [count:number]")?.action({ session: { userId: "123456" } }, "2");
     expect(benchmark).toContain("PRiSM API 测速（钱包查询，2 次）");
+
+    await expect(registered.get("versions")?.action({ session: { userId: "123456" } })).resolves.toBe(
+      `PRiSM 版本信息\nBot：${version}\n后端：1.0.0 (backend123)`,
+    );
+  });
+
+  it("keeps the Bot version visible when backend version lookup fails", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.getVersion = async () => {
+      throw new Error("offline");
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    await expect(registered.get("versions")?.action({ session: { userId: "123456" } })).resolves.toBe(
+      `PRiSM 版本信息\nBot：${version}\n后端：不可用`,
+    );
+  });
+
+  it("loads backend version from the public endpoint without an API token", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    let request: { url: string; config: any } | undefined;
+    const ctx = {
+      ...createMockKoishiContext(registered),
+      http: {
+        async get(url: string, config: any) {
+          request = { url, config };
+          return { service: "prism-api", version: "1.0.0", revision: "abc123" };
+        },
+      },
+    };
+    applyPrismKoishiPlugin(ctx, {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      baseUrl: "https://prism.example/",
+      integrationToken: "secret-token",
+    });
+
+    await expect(registered.get("versions")?.action({ session: { userId: "123456" } })).resolves.toContain(
+      "后端：1.0.0 (abc123)",
+    );
+    expect(request?.url).toBe("https://prism.example/version");
+    expect(request?.config.headers.Authorization).toBeUndefined();
   });
 
   it("quotes command replies and notifies configured logout recipients", async () => {
@@ -298,6 +392,12 @@ describe("applyPrismKoishiPlugin", () => {
       return {
         playerSettlement: { playerId: "player-1", subtotal: 10, total: 30, status: "settled", settledAt: new Date() },
         settlements: [],
+        chargeItems: [],
+        adjustments: [],
+        checkoutAdjustments: [],
+        pricingCapAdjustments: [],
+        globalCapWindows: [],
+        assetLedgerEntries: [],
         assetHoldings: [],
       };
     };
@@ -322,7 +422,17 @@ describe("applyPrismKoishiPlugin", () => {
     client.confirmCheckoutByIdentity = async () => {
       confirmations++;
       await pending;
-      return { settlement: { playerId: "player-1", subtotal: 10, total: 10 }, settlements: [], assetHoldings: [] };
+      return {
+        playerSettlement: { playerId: "player-1", subtotal: 10, total: 10 },
+        settlements: [],
+        chargeItems: [],
+        adjustments: [],
+        checkoutAdjustments: [],
+        pricingCapAdjustments: [],
+        globalCapWindows: [],
+        assetLedgerEntries: [],
+        assetHoldings: [],
+      };
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
       provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮", client: client as any,
@@ -451,7 +561,7 @@ describe("applyPrismKoishiPlugin", () => {
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
       currencyName: "猫粮",
-      mahjongTables: "a,四麻A : 🀄️ 大洋化学八口麻将机 = pricing-mahjong-a",
+      mahjongTableConfigs: [{ displayName: "🀄️ 大洋化学八口麻将机", aliases: ["a", "四麻A"], pricingConfigIds: ["pricing-mahjong-a"] }],
       mahjongTableSize: 4,
       resolveDisplayName: (subject) => `Player ${subject}`,
       client: client as any,
@@ -489,30 +599,6 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).toContain("音游区间 ( 1人 )：\n- Music");
     expect(result).toContain("活动区 ( 1人 )：\n- Room");
     expect(result).not.toContain("包间 ( 1人 )");
-  });
-
-  it("uses the configured mahjong prefix when rendering fallback table labels", async () => {
-    const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    client.listActiveSessions = async () => ({
-      sessions: [
-        { id: "mahjong-1", playerId: "player-1", playerDisplayName: "Player 1", label: "牌桌 a", identities: [{ provider: "qq", subject: "1" }] },
-      ],
-    });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      mahjongTables: "a = pricing-mahjong-a",
-      mahjongLabelPrefix: "牌桌",
-      client: client as any,
-    });
-
-    const result = await registered.get("list")?.action({ session: { userId: "1" } });
-
-    expect(result).toContain("🀄️ 牌桌 a ( 1/4 )：\n- Player 1");
   });
 
   it("uses a later session backend name after an earlier identity fallback", async () => {
@@ -640,7 +726,7 @@ describe("applyPrismKoishiPlugin", () => {
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
       currencyName: "猫粮",
-      mahjongTables: "a,四麻A : 🀄️ M.LEAGUE联名比赛专用机 = pricing-mahjong-a",
+      mahjongTableConfigs: [{ displayName: "🀄️ M.LEAGUE联名比赛专用机", aliases: ["a", "四麻A"], pricingConfigIds: ["pricing-mahjong-a"] }],
       mahjongTableSize: 4,
       client: client as any,
     };
@@ -665,7 +751,7 @@ describe("applyPrismKoishiPlugin", () => {
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
       currencyName: "猫粮",
-      mahjongTables: "a,四麻A : 🀄️ M.LEAGUE联名比赛专用机 = pricing-mahjong-a",
+      mahjongTableConfigs: [{ displayName: "🀄️ M.LEAGUE联名比赛专用机", aliases: ["a", "四麻A"], pricingConfigIds: ["pricing-mahjong-a"] }],
       mahjongTableSize: 4,
       client: client as any,
     };
@@ -690,7 +776,7 @@ describe("applyPrismKoishiPlugin", () => {
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
       provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
-      mahjongTables: "a : 大洋化学 = pricing-mahjong-a", mahjongTableSize: 1, client: client as any,
+      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 1, client: client as any,
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
     await registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588" } }, "a");
@@ -709,7 +795,7 @@ describe("applyPrismKoishiPlugin", () => {
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
       provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
-      mahjongTables: "a : 大洋化学 = pricing-mahjong-a", mahjongTableSize: 4, client: client as any,
+      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
 
@@ -740,7 +826,7 @@ describe("applyPrismKoishiPlugin", () => {
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
       provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
-      mahjongTables: "a : 大洋化学 = pricing-mahjong-a", mahjongTableSize: 4, client: client as any,
+      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
 
@@ -761,7 +847,7 @@ describe("applyPrismKoishiPlugin", () => {
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
       provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
-      mahjongTables: "a : 大洋化学 = pricing-mahjong-a", mahjongTableSize: 4, client: client as any,
+      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
 
@@ -779,6 +865,12 @@ describe("applyPrismKoishiPlugin", () => {
     client.confirmCheckoutByIdentity = async () => ({
       playerSettlement: { playerId: "player-99", subtotal: 0, total: 0, status: "settled", settledAt: new Date() },
       settlements: [],
+      chargeItems: [],
+      adjustments: [],
+      checkoutAdjustments: [],
+      pricingCapAdjustments: [],
+      globalCapWindows: [],
+      assetLedgerEntries: [],
       assetHoldings: [],
     });
 
@@ -916,12 +1008,13 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
     client.confirmCheckoutByIdentity = async () => ({
-      settlement: { playerId: "player-1", subtotal: 0, total: 0 },
+      playerSettlement: { playerId: "player-1", subtotal: 0, total: 0 },
       settlements: [{
         settlement: {
           sessionId: "s-1",
           label: "音游区间",
           startedAt: "2026-06-07T18:00:00.000Z",
+          endedAt: "2026-06-07T19:00:00.000Z",
           settledAt: "2026-06-07T19:00:00.000Z",
           subtotal: 0,
           total: 0,
@@ -931,6 +1024,10 @@ describe("applyPrismKoishiPlugin", () => {
       }],
       chargeItems: [],
       adjustments: [],
+      checkoutAdjustments: [],
+      pricingCapAdjustments: [],
+      globalCapWindows: [],
+      assetLedgerEntries: [],
       assetHoldings: [{ assetCode: "paid", quantity: 9791 }],
     });
     const config: PrismKoishiPluginConfig = {
@@ -961,12 +1058,13 @@ describe("applyPrismKoishiPlugin", () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
     client.confirmCheckoutByIdentity = async () => ({
-      settlement: { playerId: "player-1", subtotal: 90, total: 79 },
+      playerSettlement: { playerId: "player-1", subtotal: 90, total: 79 },
       settlements: [{
         settlement: {
           sessionId: "s-1",
           label: "🎵 音乐游戏",
           startedAt: "2026-07-10T17:55:00.000Z",
+          endedAt: "2026-07-10T23:31:00.000Z",
           settledAt: "2026-07-10T23:31:00.000Z",
           subtotal: 90,
           total: 79,
@@ -976,6 +1074,10 @@ describe("applyPrismKoishiPlugin", () => {
       }],
       chargeItems: [],
       adjustments: [{ label: "夜间", amount: -11 }],
+      checkoutAdjustments: [],
+      pricingCapAdjustments: [],
+      globalCapWindows: [],
+      assetLedgerEntries: [],
       assetHoldings: [{ assetCode: "paid", quantity: 2 }],
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
@@ -1010,6 +1112,7 @@ describe("applyPrismKoishiPlugin", () => {
             sessionId: "session-charge",
             label: "标准区间",
             startedAt: "2026-07-10T10:00:00.000Z",
+            endedAt: "2026-07-10T11:00:00.000Z",
             settledAt: "2026-07-10T11:00:00.000Z",
             subtotal: 10,
             total: 10,
@@ -1022,6 +1125,7 @@ describe("applyPrismKoishiPlugin", () => {
             sessionId: "session-discount",
             label: "每小时优惠三元",
             startedAt: "2026-07-10T10:00:00.000Z",
+            endedAt: "2026-07-10T11:00:00.000Z",
             settledAt: "2026-07-10T11:00:00.000Z",
             subtotal: -3,
             total: -3,
@@ -1034,6 +1138,8 @@ describe("applyPrismKoishiPlugin", () => {
       adjustments: [],
       checkoutAdjustments: [],
       pricingCapAdjustments: [],
+      globalCapWindows: [],
+      assetLedgerEntries: [],
       assetHoldings: [{ assetCode: "paid", quantity: 93 }],
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
@@ -1067,12 +1173,13 @@ describe("applyPrismKoishiPlugin", () => {
       amount: -12,
     };
     client.confirmCheckoutByIdentity = async () => ({
-      settlement: { playerId: "player-1", subtotal: 12, total: 0 },
+      playerSettlement: { playerId: "player-1", subtotal: 12, total: 0 },
       settlements: [{
         settlement: {
           sessionId: "session-1",
           label: "🎵 音乐游戏",
           startedAt: "2026-07-10T07:18:43.664Z",
+          endedAt: "2026-07-10T08:13:48.998Z",
           settledAt: "2026-07-10T08:13:48.998Z",
           subtotal: 12,
           total: 0,
@@ -1080,10 +1187,12 @@ describe("applyPrismKoishiPlugin", () => {
         chargeItems: [],
         adjustments: [discount],
       }],
+      chargeItems: [],
       adjustments: [discount],
       checkoutAdjustments: [discount],
       pricingCapAdjustments: [],
       globalCapWindows: [],
+      assetLedgerEntries: [],
       assetHoldings: [{ assetCode: "paid", quantity: 0 }],
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
@@ -1136,12 +1245,13 @@ describe("applyPrismKoishiPlugin", () => {
       },
     };
     client.confirmCheckoutByIdentity = async () => ({
-      settlement: { playerId: "player-1", subtotal: 111, total: 67 },
+      playerSettlement: { playerId: "player-1", subtotal: 111, total: 67 },
       settlements: [{
         settlement: {
           sessionId: "music-1",
           label: "🎵 音乐游戏",
           startedAt: "2026-07-10T07:28:00.000Z",
+          endedAt: "2026-07-10T12:42:00.000Z",
           settledAt: "2026-07-10T12:42:00.000Z",
           subtotal: 66,
           total: 66,
@@ -1153,6 +1263,7 @@ describe("applyPrismKoishiPlugin", () => {
           sessionId: "mahjong-4",
           label: "🀄️ 大洋化学M.LEAGUE联名八口机",
           startedAt: "2026-07-10T11:25:00.000Z",
+          endedAt: "2026-07-10T12:19:00.000Z",
           settledAt: "2026-07-10T12:19:00.000Z",
           subtotal: 3,
           total: 0,
@@ -1160,6 +1271,7 @@ describe("applyPrismKoishiPlugin", () => {
         chargeItems: [],
         adjustments: [capAdjustment],
       }],
+      chargeItems: [],
       adjustments: [capAdjustment, secondCapAdjustment],
       checkoutAdjustments: [],
       pricingCapAdjustments: [capAdjustment, secondCapAdjustment],
@@ -1178,6 +1290,7 @@ describe("applyPrismKoishiPlugin", () => {
         priceCap: 79,
         paidBefore: 54,
       }],
+      assetLedgerEntries: [],
       assetHoldings: [{ assetCode: "paid", quantity: 185 }],
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
@@ -1204,56 +1317,6 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).not.toContain("  └ 日间：");
   });
 
-  it("renders legacy cap adjustments without exposing the internal delta", async () => {
-    const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    const capAdjustment = {
-      id: "time-cap:cap-config:night:2026-07-10T14:00:00.000Z",
-      source: "time.cap:cap-config:night",
-      label: "夜间",
-      amount: -21,
-      pricingCapHistory: {
-        capConfigId: "cap-config",
-        capRuleId: "night",
-        capAnchorAt: "2026-07-10T14:00:00.000Z",
-        includedPricingConfigIds: ["music"],
-        amount: 79,
-      },
-    };
-    client.previewCheckoutByIdentity = async () => ({
-      settlementPreview: { playerId: "player-1", subtotal: 100, total: 79 },
-      sessionPreviews: [{
-        sessionId: "music-1",
-        label: "🎵 音乐游戏",
-        startedAt: "2026-07-10T17:38:00.000Z",
-        endedAt: "2026-07-11T00:35:00.000Z",
-        status: "active",
-        subtotal: 100,
-        total: 100,
-        adjustments: [],
-      }],
-      adjustments: [capAdjustment],
-      pricingCapAdjustments: [capAdjustment],
-      assetHoldings: [{ assetCode: "paid", quantity: 36.5 }],
-    });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
-
-    const result = await registered.get("billing [target:user]")?.action({
-      session: { userId: "3105949451", senderName: "🈚" },
-    });
-
-    expect(result).toContain("封顶：\n- 07-10 夜间：100 → 79猫粮");
-    expect(result).not.toContain("计费调整");
-    expect(result).not.toContain("-21猫粮");
-  });
-
   it("renders multi-session billing format with labels as-is", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
@@ -1269,6 +1332,7 @@ describe("applyPrismKoishiPlugin", () => {
           status: "closed",
           subtotal: 10,
           total: 10,
+          chargeItems: [],
           adjustments: [],
         },
         {
@@ -1279,11 +1343,16 @@ describe("applyPrismKoishiPlugin", () => {
           status: "closed",
           subtotal: 20,
           total: 20,
+          chargeItems: [],
           adjustments: [],
         },
       ],
+      chargeItems: [],
       adjustments: [],
+      checkoutAdjustments: [],
+      pricingCapAdjustments: [],
       assetHoldings: [{ assetCode: "paid", quantity: 42 }],
+      globalCapWindows: [],
     });
     const config: PrismKoishiPluginConfig = {
       provider: "qq",
@@ -1319,7 +1388,7 @@ describe("applyPrismKoishiPlugin", () => {
     });
     const config: PrismKoishiPluginConfig = {
       provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
-      mahjongTables: "a : 大洋化学 = pricing-mahjong-a", mahjongTableSize: 4, client: client as any,
+      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
 

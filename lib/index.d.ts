@@ -1,5 +1,6 @@
 import { Schema } from "koishi";
 export declare const name = "prism";
+export declare const version: string;
 export declare const Config: Schema<PrismKoishiPluginConfig>;
 export declare function apply(ctx: any, config: PrismKoishiPluginConfig): void;
 export declare class PrismBotClientError extends Error {
@@ -27,9 +28,7 @@ export type PrismKoishiPluginConfig = {
     staffUserIds?: string[];
     logoutNotifyUserIds?: string[];
     mahjongTableConfigs?: MahjongTableConfigInput[];
-    mahjongTables?: string;
     mahjongTableSize?: number;
-    mahjongLabelPrefix?: string;
     powerOffInterval?: number;
     /**
      * Used by /list to resolve player display names from the chat platform.
@@ -76,8 +75,7 @@ export type Sender = {
     name: string;
 };
 export declare function humanReadableBotError(error: PrismBotClientError): string;
-export declare function parseMahjongTables(value: string, labelPrefix: string): Map<string, MahjongTableConfig>;
-export declare function resolveMahjongTableConfigs(structured: readonly MahjongTableConfigInput[], legacyValue: string, labelPrefix: string): Map<string, MahjongTableConfig>;
+export declare function resolveMahjongTableConfigs(structured: readonly MahjongTableConfigInput[]): Map<string, MahjongTableConfig>;
 declare const _default: {
     name: string;
     Config: Schema<PrismKoishiPluginConfig>;

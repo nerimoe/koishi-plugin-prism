@@ -1,6 +1,8 @@
 import { h, Schema } from "koishi";
+import packageMetadata from "../package.json";
 
 export const name = "prism";
+export const version = packageMetadata.version;
 
 export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   provider: Schema.string().required().description("平台提供商 (如 qq)"),
@@ -21,9 +23,7 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
     aliases: Schema.array(Schema.string()).default([]).description("命令别名（至少一个），例如 a、四麻A"),
     pricingConfigIds: Schema.array(Schema.string()).default([]).description("开局时绑定的计费方案 ID"),
   })).default([]).description("麻将桌配置"),
-  mahjongTables: Schema.string().description("旧版麻将桌文本配置（已废弃；仅在结构化配置为空时使用）"),
   mahjongTableSize: Schema.number().default(4).description("麻将桌人数限制"),
-  mahjongLabelPrefix: Schema.string().default("麻将桌").description("麻将账单前缀"),
 });
 
 export function apply(ctx: any, config: PrismKoishiPluginConfig): void {
@@ -63,9 +63,7 @@ export type PrismKoishiPluginConfig = {
   staffUserIds?: string[];
   logoutNotifyUserIds?: string[];
   mahjongTableConfigs?: MahjongTableConfigInput[];
-  mahjongTables?: string;
   mahjongTableSize?: number;
-  mahjongLabelPrefix?: string;
   powerOffInterval?: number;
   /**
    * Used by /list to resolve player display names from the chat platform.
@@ -235,6 +233,10 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.benchmarkApi(await service.sender(context), count),
   ));
 
+  ctx.command("versions", "查看 Bot 与 PRiSM 后端版本").action(wrap(async () =>
+    service.versions(),
+  ));
+
   ctx.command("items [target:user]", "查看玩家资产").action(wrap(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.items(sender), context.session?.bot),
   ));
@@ -389,6 +391,10 @@ class PrismApiClient {
       body: this.identityBody(identity),
     });
     return result.player;
+  }
+
+  async getVersion() {
+    return this.request("GET", "/version", {});
   }
 
   async startSessionByIdentity(identity: any, body?: any) {
@@ -625,7 +631,7 @@ class PrismKoishiService {
       if (!Number.isFinite(total) || total < 0) return "金额必须为非负数";
       const reason = cleanText(rawReason) || "管理员调价";
       const result = (await this.client.checkoutWithOverrideByIdentity(this.identity(sender), total, reason)) as UncheckedRecord;
-      const playerId = String(result?.playerSettlement?.playerId ?? result?.settlement?.playerId ?? "");
+      const playerId = String(result.playerSettlement.playerId);
       if (playerId) this.removeMahjongPlayer(playerId);
       return this.formatAndNotifyCheckout(result, sender, "✅ 覆盖结账成功 · 结算账单", bot);
     }, bot);
@@ -659,7 +665,7 @@ class PrismKoishiService {
     }
 
     if (activeCount > 0) {
-      const label = tableConfig.displayName || `${this.config.mahjongLabelPrefix ?? "麻将桌"} ${tableKey}`;
+      const label = tableConfig.displayName;
       const result = (await this.client.startSessionByIdentity(this.identity(sender), {
         pricingConfigIds: tableConfig.pricingConfigIds,
         label,
@@ -685,7 +691,7 @@ class PrismKoishiService {
 
     const seats = state.waiting.slice(0, tableSize);
     state.waiting = state.waiting.slice(tableSize);
-    const label = tableConfig.displayName || `${this.config.mahjongLabelPrefix ?? "麻将桌"} ${tableKey}`;
+    const label = tableConfig.displayName;
     for (const seat of seats) {
       const result = (await this.client.startSessionByIdentity(seat.identity, {
         pricingConfigIds: tableConfig.pricingConfigIds,
@@ -746,7 +752,7 @@ class PrismKoishiService {
 
   async billing(sender: Sender): Promise<string> {
     const result = (await this.client.previewCheckoutByIdentity(this.identity(sender))) as UncheckedRecord;
-    return this.formatCheckoutPreview(result, sender);
+    return this.formatCheckoutPreview(result, sender, "【结算账单】", true);
   }
 
   async logout(sender: Sender, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
@@ -763,7 +769,7 @@ class PrismKoishiService {
 
   private async performLogout(sender: Sender, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
     const result = (await this.client.confirmCheckoutByIdentity(this.identity(sender), false)) as UncheckedRecord;
-    const playerId = String(result?.playerSettlement?.playerId ?? result?.settlement?.playerId ?? "");
+    const playerId = String(result.playerSettlement.playerId);
     if (playerId) this.removeMahjongPlayer(playerId);
     return this.formatAndNotifyCheckout(result, sender, "✅ 退场成功 · 结算账单", bot);
   }
@@ -774,51 +780,50 @@ class PrismKoishiService {
     title: string,
     bot?: KoishiActionContext["session"]["bot"],
   ): Promise<string> {
-    const settlement = result?.playerSettlement ?? result?.settlement ?? {};
-    const records = result?.settlements ?? [];
-    const checkoutAdjustments = (result?.checkoutAdjustments ?? []) as UncheckedRecord[];
-    const pricingCapAdjustments = (result?.pricingCapAdjustments ?? []) as UncheckedRecord[];
+    const settlement = result.playerSettlement;
+    const records = result.settlements as UncheckedRecord[];
+    const checkoutAdjustments = result.checkoutAdjustments as UncheckedRecord[];
+    const pricingCapAdjustments = result.pricingCapAdjustments as UncheckedRecord[];
     const checkoutAdjustmentKeys = new Set(checkoutAdjustments.map(adjustmentKey));
     const pricingCapAdjustmentKeys = new Set(pricingCapAdjustments.map(adjustmentKey));
     const sessionPreviews = records.map((rec: UncheckedRecord) => {
-      const s = rec?.settlement ?? {};
-      const sessionAdjustments = ((rec?.adjustments ?? []) as UncheckedRecord[]).filter((adjustment) => {
+      const s = rec.settlement;
+      const sessionAdjustments = (rec.adjustments as UncheckedRecord[]).filter((adjustment) => {
         const key = adjustmentKey(adjustment);
         return !checkoutAdjustmentKeys.has(key) &&
           !pricingCapAdjustmentKeys.has(key) &&
           !isPricingCapAdjustment(adjustment);
       });
-      const sessionSubtotal = toNumber(s.subtotal ?? 0);
+      const sessionSubtotal = toNumber(s.subtotal);
       return {
         sessionId: s.sessionId,
         label: s.label,
         startedAt: s.startedAt,
-        endedAt: s.endedAt ?? s.settledAt,
+        endedAt: s.endedAt,
         status: "closed",
         subtotal: sessionSubtotal,
         total: sessionSubtotal + sessionAdjustments.reduce(
           (sum, adjustment) => sum + toNumber(adjustment?.amount ?? 0),
           0,
         ),
-        chargeItems: rec?.chargeItems ?? [],
+        chargeItems: rec.chargeItems,
         adjustments: sessionAdjustments,
       };
     });
     const synthetic = {
-      settlement: {
+      settlementPreview: {
         playerId: settlement.playerId,
-        subtotal: settlement.subtotal ?? 0,
-        total: settlement.total ?? 0,
+        subtotal: settlement.subtotal,
+        total: settlement.total,
       },
       sessionPreviews,
-      chargeItems: result?.chargeItems ?? [],
-      adjustments: result?.adjustments ?? [],
+      chargeItems: result.chargeItems,
       checkoutAdjustments,
       pricingCapAdjustments,
-      globalCapWindows: result?.globalCapWindows ?? [],
-      assetHoldings: result?.assetHoldings ?? [],
+      globalCapWindows: result.globalCapWindows,
+      assetHoldings: result.assetHoldings,
     };
-    const receipt = await this.formatCheckoutPreview(synthetic, sender, title);
+    const receipt = await this.formatCheckoutPreview(synthetic, sender, title, false);
     const recipients = [...new Set([...(this.config.staffUserIds ?? []), ...(this.config.logoutNotifyUserIds ?? [])])];
     if (recipients.length > 0 && bot?.broadcast) {
       const channelIds = recipients.map((id) => (id.includes(":") ? id : `private:${id}`));
@@ -829,7 +834,7 @@ class PrismKoishiService {
 
   async wallet(sender: Sender): Promise<string> {
     const result = (await this.client.getWalletByIdentity(this.identity(sender))) as UncheckedRecord;
-    return formatWallet(result, this.config.currencyName);
+    return formatWallet(result.wallet as UncheckedRecord[], this.config.currencyName);
   }
 
   async benchmarkApi(sender: Sender, rawCount?: string): Promise<string> {
@@ -852,14 +857,30 @@ class PrismKoishiService {
     ].join("\n");
   }
 
+  async versions(): Promise<string> {
+    let backendVersion = "不可用";
+    try {
+      backendVersion = formatReleaseVersion(await this.client.getVersion());
+    } catch {
+      // The Bot version remains useful when the backend is offline or too old.
+    }
+    return [
+      "PRiSM 版本信息",
+      `Bot：${version}`,
+      `后端：${backendVersion}`,
+    ].join("\n");
+  }
+
   async items(sender: Sender): Promise<string> {
-    const holdings = extractRows((await this.client.getAssetsByIdentity(this.identity(sender))) as UncheckedRecord);
+    const result = (await this.client.getAssetsByIdentity(this.identity(sender))) as UncheckedRecord;
+    const holdings = result.holdings as UncheckedRecord[];
     if (holdings.length === 0) return "您当前没有任何物品。";
     return ["🎒 --- 您拥有的物品 ---", ...holdings.map(formatInventoryItem)].join("\n");
   }
 
   async history(sender: Sender): Promise<string> {
-    return formatHistory((await this.client.getSessionHistoryByIdentity(this.identity(sender))) as UncheckedRecord, this.config.currencyName);
+    const result = (await this.client.getSessionHistoryByIdentity(this.identity(sender))) as UncheckedRecord;
+    return formatHistory(result.sessions as UncheckedRecord[], this.config.currencyName);
   }
 
   async lock(sender: Sender): Promise<string> {
@@ -915,9 +936,9 @@ class PrismKoishiService {
     const code = cleanText(rawCode);
     if (!code) return commandUsage("prism_redeem");
     const result = (await this.client.redeemCodeByIdentity(this.identity(sender), code)) as UncheckedRecord;
-    const holdings = extractRows(result);
-    if (holdings.length === 0) return "兑换成功，但没有获得任何物品。";
-    return ["✅ 兑换成功！您获得了以下物品：", ...holdings.map(formatRedeemedItem)].join("\n");
+    const grantedAssets = result.grantedAssets as UncheckedRecord[];
+    if (grantedAssets.length === 0) return "兑换成功，但没有获得任何物品。";
+    return ["✅ 兑换成功！您获得了以下物品：", ...grantedAssets.map(formatRedeemedItem)].join("\n");
   }
 
   async listActiveSessions(sender: Sender): Promise<string> {
@@ -927,18 +948,14 @@ class PrismKoishiService {
 
     const tableByLabel = new Map(
       uniqueMahjongConfigs(this.mahjongTableConfigs()).map((table) => [
-        mahjongSessionLabel(table, this.config.mahjongLabelPrefix ?? "麻将桌"),
+        mahjongSessionLabel(table),
         table,
       ]),
     );
     const players = groupSessionsByPlayer(sessions);
     const groups = await this.buildPlayerGroups(players, tableByLabel);
     this.mergeWaitingSeats(groups);
-    return formatPlayerGroups(
-      groups,
-      this.config.mahjongTableSize ?? 4,
-      this.config.mahjongLabelPrefix ?? "麻将桌",
-    );
+    return formatPlayerGroups(groups, this.config.mahjongTableSize ?? 4);
   }
 
   async listDeviceStates(rawAlias?: string): Promise<string> {
@@ -1050,7 +1067,7 @@ class PrismKoishiService {
     for (const [tableId, state] of this.mahjongTables) {
       const table = uniqueMahjongConfigs(this.mahjongTableConfigs()).find((candidate) => candidate.tableId === tableId);
       if (!table) continue;
-      const label = mahjongSessionLabel(table, this.config.mahjongLabelPrefix ?? "麻将桌");
+      const label = mahjongSessionLabel(table);
       let group = groups.groups.find((candidate) => candidate.label === label);
       if (!group) {
         group = { label, table, players: [] };
@@ -1094,13 +1111,13 @@ class PrismKoishiService {
   }
 
   private mahjongTableConfigs(): Map<string, MahjongTableConfig> {
-    return resolveMahjongTableConfigs(this.config.mahjongTableConfigs ?? [], this.config.mahjongTables ?? "", this.config.mahjongLabelPrefix ?? "麻将桌");
+    return resolveMahjongTableConfigs(this.config.mahjongTableConfigs ?? []);
   }
 
   private syncMahjongTableStates(sessions: readonly ActiveSessionListItem[]): void {
     const tables = uniqueMahjongConfigs(this.mahjongTableConfigs());
     const tableByLabel = new Map(tables.map((table) => [
-      mahjongSessionLabel(table, this.config.mahjongLabelPrefix ?? "麻将桌"),
+      mahjongSessionLabel(table),
       table,
     ]));
     // All playerIds that still have at least one active session in the backend.
@@ -1195,44 +1212,18 @@ class PrismKoishiService {
     result: UncheckedRecord,
     sender: Sender | null,
     title = "【结算账单】",
+    isPreview: boolean,
   ): Promise<string> {
-    if (result?.billing && result?.session) {
-      return formatLegacyBilling(result, this.config.currencyName);
-    }
     const currency = this.config.currencyName;
-    const preview = result?.settlementPreview ?? result?.settlement ?? {};
-    const playerId = preview?.playerId ?? "";
-    const subtotal = firstDefined(preview, "subtotal", "originalCost", 0);
-    const total = firstDefined(preview, "total", "finalCost", "amount", subtotal);
-    const previewedAt = parseDateTime(preview?.previewedAt);
-    let sessionPreviews = (result?.sessionPreviews ?? []) as UncheckedRecord[];
-    if (sessionPreviews.length === 0 && (result?.chargeItems || result?.session)) {
-      const session = result?.session ?? {};
-      sessionPreviews = [
-        {
-          sessionId: session?.id ?? session?.sessionId,
-          label: session?.label ?? "计时区间",
-          startedAt: firstDefined(session, "startedAt", "createdAt"),
-          endedAt: firstDefined(preview, "endedAt", "settledAt", "endTime"),
-          status: session?.status ?? "active",
-          subtotal,
-          total,
-          chargeItems: result?.chargeItems ?? [],
-          adjustments: [],
-        },
-      ];
-    }
-    const adjustments = (result?.adjustments ?? []) as UncheckedRecord[];
-    const pricingCapAdjustments = (result?.pricingCapAdjustments ?? adjustments.filter(
-      isPricingCapAdjustment,
-    )) as UncheckedRecord[];
-    const sessionAdjustmentKeys = new Set(sessionPreviews.flatMap((session) =>
-      ((session?.adjustments ?? []) as UncheckedRecord[]).map(adjustmentKey),
-    ));
-    const checkoutAdjustments = (result?.checkoutAdjustments ?? adjustments.filter((adjustment) =>
-      !isPricingCapAdjustment(adjustment) && !sessionAdjustmentKeys.has(adjustmentKey(adjustment)),
-    )) as UncheckedRecord[];
-    const assetHoldings = result?.assetHoldings ?? [];
+    const preview = result.settlementPreview;
+    const playerId = preview.playerId;
+    const subtotal = preview.subtotal;
+    const total = preview.total;
+    const previewedAt = parseDateTime(preview.previewedAt);
+    const sessionPreviews = result.sessionPreviews as UncheckedRecord[];
+    const pricingCapAdjustments = result.pricingCapAdjustments as UncheckedRecord[];
+    const checkoutAdjustments = result.checkoutAdjustments as UncheckedRecord[];
+    const assetHoldings = result.assetHoldings as UncheckedRecord[];
     const lines: string[] = [];
 
     lines.push(title);
@@ -1283,54 +1274,37 @@ class PrismKoishiService {
       }
       const sessionAdjustments = (sPrev?.adjustments ?? []) as UncheckedRecord[];
       for (const adj of sessionAdjustments) {
-        const amount = toNumber(firstDefined(adj ?? {}, "amount", "saved", 0));
+        const amount = toNumber(adj.amount);
         if (amount === 0) continue;
-        const adjLabel = firstDefined(adj ?? {}, "label", "name", "source") ?? "优惠";
+        const adjLabel = adj.label || adj.source || "优惠";
         lines.push(`  └ ${adjLabel}：${formatNumber(amount)}${currency}`);
       }
     }
 
-    const cappedWindows = ((result?.globalCapWindows ?? []) as UncheckedRecord[]).filter((window) =>
+    const cappedWindows = (result.globalCapWindows as UncheckedRecord[]).filter((window) =>
       toNumber(window?.currentAmount) !== toNumber(window?.amountApplied),
     );
-    const appliedCapAdjustments = pricingCapAdjustments.filter((adjustment) =>
-      toNumber(adjustment?.amount ?? 0) !== 0,
-    );
-    if (cappedWindows.length > 0 || appliedCapAdjustments.length > 0) {
+    if (cappedWindows.length > 0) {
       lines.push("");
       lines.push("封顶：");
-      if (cappedWindows.length > 0) {
-        for (const window of cappedWindows) {
-          const label = firstDefined(window, "ruleLabel", "label", "name") ?? "封顶时段";
-          const startedAt = parseDateTime(window?.windowStartedAt);
-          const datedLabel = startedAt ? `${formatMD(startedAt)} ${label}` : label;
-          const currentAmount = toNumber(window?.currentAmount);
-          const amountApplied = toNumber(window?.amountApplied);
-          const priceCap = toNumber(window?.priceCap);
-          const paidBefore = toNumber(window?.paidBefore);
-          const details = [`上限${formatNumber(priceCap)}`];
-          if (paidBefore > 0) details.push(`已计${formatNumber(paidBefore)}`);
-          lines.push(
-            `- ${datedLabel}：${formatNumber(currentAmount)} → ${formatNumber(amountApplied)}${currency}（${details.join("，")}）`,
-          );
-        }
-      } else {
-        for (const adjustment of appliedCapAdjustments) {
-          const label = firstDefined(adjustment, "label", "name", "source") ?? "封顶时段";
-          const history = adjustment?.pricingCapHistory ?? {};
-          const amountApplied = toNumber(history?.amount);
-          const currentAmount = amountApplied - toNumber(adjustment?.amount ?? 0);
-          const anchorAt = parseDateTime(history?.capAnchorAt);
-          const datedLabel = anchorAt ? `${formatMD(anchorAt)} ${label}` : label;
-          lines.push(amountApplied > 0
-            ? `- ${datedLabel}：${formatNumber(currentAmount)} → ${formatNumber(amountApplied)}${currency}`
-            : `- ${datedLabel}：${formatNumber(adjustment?.amount ?? 0)}${currency}`);
-        }
+      for (const window of cappedWindows) {
+        const label = window.ruleLabel || "封顶时段";
+        const startedAt = parseDateTime(window.windowStartedAt);
+        const datedLabel = startedAt ? `${formatMD(startedAt)} ${label}` : label;
+        const currentAmount = toNumber(window.currentAmount);
+        const amountApplied = toNumber(window.amountApplied);
+        const priceCap = toNumber(window.priceCap);
+        const paidBefore = toNumber(window.paidBefore);
+        const details = [`上限${formatNumber(priceCap)}`];
+        if (paidBefore > 0) details.push(`已计${formatNumber(paidBefore)}`);
+        lines.push(
+          `- ${datedLabel}：${formatNumber(currentAmount)} → ${formatNumber(amountApplied)}${currency}（${details.join("，")}）`,
+        );
       }
     }
 
     const visibleCheckoutAdjustments = checkoutAdjustments.filter((adjustment) => {
-      const amount = toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0));
+      const amount = toNumber(adjustment.amount);
       const isOverride = cleanText(adjustment?.source).startsWith("staff.override:");
       return amount !== 0 && !isOverride;
     });
@@ -1347,8 +1321,8 @@ class PrismKoishiService {
     if (visibleCheckoutAdjustments.length > 0) {
       lines.push("");
       for (const adjustment of visibleCheckoutAdjustments) {
-        const amount = toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0));
-        const label = firstDefined(adjustment ?? {}, "label", "name", "source") ?? "优惠";
+        const amount = toNumber(adjustment.amount);
+        const label = adjustment.label || adjustment.source || "优惠";
         lines.push(`${label}：${formatNumber(amount)}${currency}`);
       }
     }
@@ -1358,7 +1332,6 @@ class PrismKoishiService {
       lines.push(`${hasManualAdjustment ? "调整后价格" : "优惠后价格"}：${formatNumber(total)}${currency}`);
     }
     if (hasBalance) {
-      const isPreview = result?.settlementPreview != null && result?.settlement == null;
       if (isPreview) {
         const projectedBalance = balance - toNumber(total);
         lines.push(`当前余额：${formatNumber(balance)}${currency}`);
@@ -1419,44 +1392,9 @@ export function humanReadableBotError(error: PrismBotClientError): string {
   return String(error?.message ?? error);
 }
 
-export function parseMahjongTables(value: string, labelPrefix: string): Map<string, MahjongTableConfig> {
-  const tables = new Map<string, MahjongTableConfig>();
-  for (const item of value.replace(/\n/g, ";").split(";")) {
-    const text = item.trim();
-    if (!text) continue;
-    let aliasPart: string;
-    let rest: string;
-    let displayName = "";
-    if (text.includes(":")) {
-      [aliasPart, rest] = splitOnce(text, ":");
-      if (!rest.includes("=")) continue;
-      [displayName, rest] = splitOnce(rest, "=");
-      displayName = displayName.trim();
-    } else {
-      if (!text.includes("=")) continue;
-      [aliasPart, rest] = splitOnce(text, "=");
-    }
-    const aliases = aliasPart.split(",").map((a) => a.trim()).filter(Boolean);
-    const pricingConfigIds = rest.split("+").map((p) => p.trim()).filter(Boolean);
-    if (aliases.length === 0 || pricingConfigIds.length === 0) continue;
-    const tableId = aliases[0];
-    const config: MahjongTableConfig = {
-      tableId,
-      displayName,
-      aliases,
-      pricingConfigIds,
-    };
-    for (const alias of aliases) tables.set(alias, config);
-  }
-  return tables;
-}
-
 export function resolveMahjongTableConfigs(
   structured: readonly MahjongTableConfigInput[],
-  legacyValue: string,
-  labelPrefix: string,
 ): Map<string, MahjongTableConfig> {
-  if (structured.length === 0) return parseMahjongTables(legacyValue, labelPrefix);
   const tables = new Map<string, MahjongTableConfig>();
   for (const input of structured) {
     const displayName = cleanText(input.displayName);
@@ -1474,8 +1412,8 @@ function uniqueMahjongConfigs(tables: Map<string, MahjongTableConfig>): MahjongT
   return [...new Map([...tables.values()].map((table) => [table.tableId, table])).values()];
 }
 
-function mahjongSessionLabel(table: MahjongTableConfig, labelPrefix: string): string {
-  return table.displayName || `${labelPrefix} ${table.tableId}`;
+function mahjongSessionLabel(table: MahjongTableConfig): string {
+  return table.displayName;
 }
 
 function groupSessionsByPlayer(sessions: readonly ActiveSessionListItem[]): Map<string, ActivePlayer> {
@@ -1495,7 +1433,7 @@ function sessionStartedAt(session: ActiveSessionListItem): number {
   return Number.isFinite(value) ? value : 0;
 }
 
-function formatPlayerGroups(groups: PlayerGroups, tableSize: number, mahjongLabelPrefix: string): string {
+function formatPlayerGroups(groups: PlayerGroups, tableSize: number): string {
   const populatedGroups = groups.groups.filter((group) => group.players.length > 0);
   const total = new Set(populatedGroups.flatMap((group) => group.players.map((player) => player.playerId))).size;
   if (total === 0) return "🫥 窝里目前没有玩家呢";
@@ -1503,26 +1441,15 @@ function formatPlayerGroups(groups: PlayerGroups, tableSize: number, mahjongLabe
   const lines = [`[总计 ${total} 人]`];
   for (const group of populatedGroups) {
     const heading = group.table
-      ? `${formatMahjongTableLabel(group.table, mahjongLabelPrefix)} ( ${group.players.length}/${tableSize} )`
+      ? `${group.table.displayName} ( ${group.players.length}/${tableSize} )`
       : `${group.label} ( ${group.players.length}人 )`;
     lines.push(`\n${heading}：\n${formatPlayerNames(group.players)}`);
   }
   return lines.join("\n");
 }
 
-function formatMahjongTableLabel(table: MahjongTableConfig, labelPrefix: string): string {
-  const label = mahjongSessionLabel(table, labelPrefix);
-  return table.displayName ? label : `🀄️ ${label}`;
-}
-
 function formatPlayerNames(players: ActivePlayer[]): string {
   return players.map((player) => `- ${player.displayName || player.playerId || "未知玩家"}`).join(", ");
-}
-
-function splitOnce(text: string, sep: string): [string, string] {
-  const idx = text.indexOf(sep);
-  if (idx === -1) return [text, ""];
-  return [text.slice(0, idx), text.slice(idx + sep.length)];
 }
 
 function commandUsage(command: string): string {
@@ -1549,6 +1476,13 @@ function parsePositiveInt(
 
 function cleanText(value: any): string {
   return value == null ? "" : String(value).trim();
+}
+
+function formatReleaseVersion(value: unknown): string {
+  const record = value && typeof value === "object" ? value as UncheckedRecord : {};
+  const release = cleanText(record.version) || "unknown";
+  const revision = cleanText(record.revision);
+  return !revision || revision === "unknown" ? release : `${release} (${revision})`;
 }
 
 function normalizeTargetSubject(value: unknown): string {
@@ -1593,10 +1527,10 @@ function toNumber(value: any): number {
 
 function hasAdjustmentEntries(adjustments: unknown, sessionPreviews: UncheckedRecord[]): boolean {
   return (adjustments as UncheckedRecord[]).some((adjustment) =>
-    toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0)) !== 0,
+    toNumber(adjustment.amount) !== 0,
   ) || sessionPreviews.some((session) =>
-    ((session?.adjustments ?? []) as UncheckedRecord[]).some((adjustment) =>
-      toNumber(firstDefined(adjustment ?? {}, "amount", "saved", 0)) !== 0,
+    (session.adjustments as UncheckedRecord[]).some((adjustment) =>
+      toNumber(adjustment.amount) !== 0,
     ),
   );
 }
@@ -1698,91 +1632,29 @@ function maxDate(dates: Date[]): Date {
   return dates.reduce((acc, d) => (d.getTime() > acc.getTime() ? d : acc), dates[0]);
 }
 
-function extractRows(value: any): UncheckedRecord[] {
-  if (Array.isArray(value)) return value.filter((row) => row && typeof row === "object");
-  if (!value || typeof value !== "object") return [];
-  for (const key of ["holdings", "assets", "items", "wallet", "sessions"]) {
-    const rows = value[key];
-    if (Array.isArray(rows)) return rows.filter((row) => row && typeof row === "object");
-  }
-  return [];
-}
-
-function rowQuantity(row: UncheckedRecord): number {
-  return toNumber(firstDefined(row, "quantity", "amount", "count", 0));
-}
-
-function holdingName(row: UncheckedRecord): string {
-  return (
-    row.name ||
-    row.assetName ||
-    assetName(row) ||
-    row.assetCode ||
-    row.type ||
-    "资产"
-  );
-}
-
-function assetName(row: UncheckedRecord): string {
-  const asset = row?.asset;
-  if (asset && typeof asset === "object") {
-    return asset.name || asset.code || "";
-  }
-  return row.assetName || row.name || row.assetCode || "资产";
-}
-
-function isPaidBalance(row: UncheckedRecord): boolean {
-  const value = `${row?.assetCode ?? ""} ${row?.assetName ?? ""} ${row?.type ?? ""}`.toLowerCase();
-  return value.includes("paid") || value.includes("充值");
-}
-
-function isFreeBalance(row: UncheckedRecord): boolean {
-  const value = `${row?.assetCode ?? ""} ${row?.assetName ?? ""} ${row?.type ?? ""}`.toLowerCase();
-  return value.includes("free") || value.includes("免费") || value.includes("赠送");
-}
-
-function firstDefined(mapping: any, ...keys: any[]): any {
-  const last = keys[keys.length - 1];
-  let keyList = keys;
-  let fallback: any = undefined;
-  if (typeof last !== "string") {
-    fallback = last;
-    keyList = keys.slice(0, -1);
-  }
-  for (const key of keyList) {
-    if (mapping && typeof mapping === "object" && key in mapping && mapping[key] != null) return mapping[key];
-  }
-  return fallback;
-}
-
 function formatInventoryItem(row: UncheckedRecord): string {
-  let line = `- ${holdingName(row)} (x${formatNumber(rowQuantity(row))})`;
-  const expiresAt = row?.expireAt ?? row?.expiresAt;
-  if (expiresAt) line += `\n  到期: ${formatDateTime(expiresAt)}`;
+  let line = `- ${row.assetName || row.assetCode || "资产"} (x${formatNumber(row.quantity)})`;
+  if (row.expiresAt) line += `\n  到期: ${formatDateTime(row.expiresAt)}`;
   return line;
 }
 
 function formatRedeemedItem(row: UncheckedRecord): string {
-  let name = holdingName(row);
-  const assetType = row?.assetType ?? row?.asset?.type;
-  const durationMs = row?.durationMs;
-  if (assetType === "PASS" && durationMs) {
-    const days = Math.floor(toNumber(durationMs) / (1000 * 60 * 60 * 24));
-    if (days > 0) name += ` (${days}天)`;
-  }
-  return `- ${name} x${formatNumber(rowQuantity(row))}`;
+  return `- ${row.assetName || row.assetCode || "资产"} x${formatNumber(row.quantity)}`;
 }
 
-function formatWallet(result: any, currency: string): string {
-  if (result && typeof result.total === "object") {
-    return formatLegacyWallet(result, currency);
-  }
-  const rows = extractRows(result?.wallet ?? result);
-  const paid = rows.filter(isPaidBalance).reduce((acc, row) => acc + rowQuantity(row), 0);
-  const free = rows.filter(isFreeBalance).reduce((acc, row) => acc + rowQuantity(row), 0);
+function formatWallet(rows: UncheckedRecord[], currency: string): string {
+  const paid = rows
+    .filter((row) => String(row.assetCode).toLowerCase().includes("paid"))
+    .reduce((sum, row) => sum + toNumber(row.quantity), 0);
+  const free = rows
+    .filter((row) => String(row.assetCode).toLowerCase().includes("free"))
+    .reduce((sum, row) => sum + toNumber(row.quantity), 0);
   const other = rows
-    .filter((row) => !isPaidBalance(row) && !isFreeBalance(row))
-    .reduce((acc, row) => acc + rowQuantity(row), 0);
+    .filter((row) => {
+      const code = String(row.assetCode).toLowerCase();
+      return !code.includes("paid") && !code.includes("free");
+    })
+    .reduce((sum, row) => sum + toNumber(row.quantity), 0);
   const total = paid + free + other;
   return [
     "💰 --- 钱包余额 ---",
@@ -1792,127 +1664,13 @@ function formatWallet(result: any, currency: string): string {
   ].join("\n");
 }
 
-function formatLegacyWallet(result: any, currency: string): string {
-  const totalInfo = result?.total ?? {};
-  const paidInfo = result?.paid ?? {};
-  const freeInfo = result?.free ?? {};
-  const available = firstDefined(totalInfo, "available", 0);
-  const allBalance = firstDefined(totalInfo, "all", available);
-  const paid = firstDefined(paidInfo, "available", 0);
-  const free = firstDefined(freeInfo, "available", 0);
-
-  const lines = [
-    "💰 --- 钱包余额 ---",
-    `可用: ${formatNumber(available)} ${currency} (共 ${formatNumber(allBalance)})`,
-    `  - 付费: ${formatNumber(paid)}`,
-    `  - 免费: ${formatNumber(free)}`,
-  ];
-
-  const unavailable = toNumber(allBalance) - toNumber(available);
-  if (unavailable > 0) {
-    lines.push(`\n您还有 ${formatNumber(unavailable)} ${currency}未到可用时间。`);
-  }
-
-  const expiringFree = availableDetails(freeInfo).filter((item) => item.expireAt);
-  expiringFree.sort((a, b) => (parseDateTime(a.expireAt)?.getTime() ?? 0) - (parseDateTime(b.expireAt)?.getTime() ?? 0));
-  if (expiringFree.length > 0) {
-    const soonest = expiringFree[0];
-    lines.push(`\n注意：您有 ${formatNumber(soonest.count ?? 0)} 免费${currency}将于 ${formatDateTime(soonest.expireAt)} 过期。`);
-  }
-
-  const passes = availableDetails(result?.passes);
-  if (passes.length > 0) {
-    lines.push(`\n--- 可用月卡 (${passes.length}) ---`);
-    for (const item of passes) {
-      lines.push(`- ${assetName(item)}`);
-      lines.push(`  到期: ${formatDateTime(item?.expireAt ?? item?.expiresAt)}`);
-    }
-  }
-
-  const tickets = availableDetails(result?.tickets);
-  if (tickets.length > 0) {
-    lines.push(`\n--- 可用优惠券 (${tickets.length}) ---`);
-    for (const item of tickets) {
-      lines.push(`- ${assetName(item)} (x${formatNumber(item?.count ?? rowQuantity(item))})`);
-      lines.push(`  到期: ${formatDateTime(item?.expireAt ?? item?.expiresAt)}`);
-    }
-  }
-  return lines.join("\n");
-}
-
-function availableDetails(value: any): UncheckedRecord[] {
-  const details = value?.details ?? {};
-  const rows = details?.available ?? [];
-  return Array.isArray(rows) ? rows.filter((row) => row && typeof row === "object") : [];
-}
-
-function formatHistory(result: any, currency: string): string {
-  const sessions = extractRows(result?.sessions ?? result);
+function formatHistory(sessions: UncheckedRecord[], currency: string): string {
   if (sessions.length === 0) return "暂无历史记录";
   const lines = [`📜 最近 ${sessions.length} 条记录:`];
   for (const session of sessions) {
-    const sessionId = firstDefined(session, "id", "sessionId", "");
-    const start = formatDateTime(firstDefined(session, "createdAt", "startedAt", "startTime"));
-    const endRaw = firstDefined(session, "closedAt", "endedAt", "endTime");
-    const end = endRaw ? formatDateTime(endRaw) : "进行中";
-    const finalCost = firstDefined(session, "finalCost", "total");
-    const cost = finalCost == null ? "未结算" : `${formatNumber(finalCost)} ${currency}`;
-    lines.push(`- [${sessionId}] ${start} -> ${end} (${cost})`);
-  }
-  return lines.join("\n");
-}
-
-function formatLegacyBilling(result: any, currency: string): string {
-  const billing = result?.billing ?? {};
-  const session = result?.session ?? {};
-  const discount = result?.discount;
-  const wallet = result?.wallet ?? {};
-  const lines: string[] = ["--- 账单详情 ---"];
-  const start = session.createdAt;
-  const end = billing.endTime;
-  lines.push(`入场: ${formatDateTime(start)}`);
-  lines.push(`结算: ${formatDateTime(end)}`);
-  lines.push(`时长: ${formatDurationMinutes(start, end)}`);
-  lines.push("---");
-  const originalCost = discount ? discount.originalCost : billing.totalCost ?? 0;
-  let finalCost = discount ? discount.finalCost : billing.totalCost ?? 0;
-  if (session.costOverwrite) finalCost = session.costOverwrite;
-  lines.push(`计费价: ${formatNumber(originalCost)} ${currency}`);
-  if (discount) {
-    for (const log of discount.appliedLogs ?? []) {
-      lines.push(`  -「${log?.asset ?? ""}」: -${formatNumber(log?.saved ?? 0)} ${currency}`);
-    }
-  }
-  lines.push(`结算价: ${formatNumber(finalCost)} ${currency}`);
-
-  const walletTotal = wallet?.total ?? {};
-  if (walletTotal.available != null) {
-    const currentBalance = walletTotal.available ?? 0;
-    lines.push("---");
-    lines.push(`当前余额: ${formatNumber(currentBalance)} ${currency}`);
-    lines.push(`扣款后: ${formatNumber(toNumber(currentBalance) - toNumber(finalCost))} ${currency}`);
-  }
-  lines.push("---");
-  lines.push("计费区间:");
-  const segments = billing.segments ?? [];
-  if (segments.length === 0) {
-    lines.push("  (无)");
-  }
-  for (const segment of segments) {
-    if (toNumber(segment?.cost ?? 0) < 0) continue;
-    lines.push(`- ${segment?.ruleName ?? ""}`);
-    if (segment?.startTime && segment?.endTime) {
-      lines.push(`  时段: ${formatTimeRange(segment.startTime, segment.endTime)}`);
-    }
-    lines.push(`  时长: ${formatDurationValue(segment?.durationMinutes ?? 0)}`);
-    const capped = segment?.isCapped ? " (已封顶)" : "";
-    lines.push(`  费用: ${formatNumber(segment?.cost ?? 0)} ${currency}${capped}`.trim());
-  }
-
-  const monthlyPass = (wallet?.passes?.details?.available ?? [null])[0];
-  if (monthlyPass && monthlyPass?.expireAt) {
-    lines.push("---");
-    lines.push(`您的月卡将于 ${formatDateTime(monthlyPass.expireAt)} 到期。`);
+    const end = session.endedAt ? formatDateTime(session.endedAt) : "进行中";
+    const cost = session.total == null ? "未结算" : `${formatNumber(session.total)} ${currency}`;
+    lines.push(`- [${session.sessionId}] ${formatDateTime(session.startedAt)} -> ${end} (${cost})`);
   }
   return lines.join("\n");
 }

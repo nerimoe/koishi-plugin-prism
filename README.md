@@ -33,7 +33,6 @@
 | `staffUserIds` | `string[]` | `[]` | 允许执行管理员快捷指令的平台用户 ID（如 QQ 号）白名单。空列表不授予目标用户操作权限。 |
 | `logoutNotifyUserIds` | `string[]` | `[]` | 结账成功后额外私聊完整账单的平台用户 ID。通知收件人为该列表与 `staffUserIds` 的去重并集。 |
 | `mahjongTableConfigs` | `object[]` | `[]` | 推荐的结构化麻将桌列表。每项填写显示名称、命令别名列表与计费方案 ID 列表。显示名称同时作为内部桌位锚点与 session 标签。 |
-| `mahjongTables` | `string` | - | 旧版文本配置，仅在 `mahjongTableConfigs` 为空时读取；建议迁移到结构化列表。 |
 
 ### 麻将桌配置
 
@@ -45,7 +44,7 @@ aliases: [a, 四麻A, 比赛机]
 pricingConfigIds: [pricing-mahjong-a]
 ```
 
-`displayName` 是该桌的稳定锚点和 session 标签；玩家输入的桌号、简称等均写入 `aliases`（至少一个）。结构化配置有内容时优先于旧 `mahjongTables` 文本；已有旧配置不会失效，可逐桌迁移。
+`displayName` 是该桌的稳定锚点和 session 标签；玩家输入的桌号、简称等均写入 `aliases`（至少一个）。麻将桌只读取这个结构化列表。
 
 管理员快捷指令必须同时配置 `enableStaffCommands: true` 与 `staffUserIds`。它们使用现有 `integrationToken` 调用受限的余额调整和立即结账接口；目标用户参数使用 Koishi 的 `user` 选择器，只有白名单内的管理员可以操作其他用户。
 
@@ -57,7 +56,7 @@ pricingConfigIds: [pricing-mahjong-a]
 * `logout` - 结算当前玩家的计费场次。
 玩家在未产生任何费用时退场，机器人会简洁显示“本次未产生费用”和当前余额；存在收费或优惠明细时仍显示完整结算账单。负单价 session 会在区间明细中保留真实的负数计费贡献，只有后端汇总全部 session 后的最终应付金额会限制为不低于 `0`。
 结账成功回执中的余额为后端已经完成扣款后的余额；只有 `/billing` 预览会显示当前余额与预计结账后余额。
-方案内区间封顶直接计入对应计时费用；全局封顶按日期和时段逐条列出，不合并、不截断，并直接形成计费总价，不作为优惠。若旧后端未返回结构化封顶窗口，插件会用封顶历史恢复原价与计入金额，不会显示内部 adjustment 差额。只作用于整次结账的资产优惠直接列在计费总价下方，不显示额外标题或 emoji，也不会误归属到最后一个 session。
+方案内区间封顶直接计入对应计时费用；全局封顶按后端返回的结构化日期和时段逐条列出，不合并、不截断，并直接形成计费总价，不作为优惠。只作用于整次结账的资产优惠直接列在计费总价下方，不显示额外标题或 emoji，也不会误归属到最后一个 session。
 在玩家退场或管理员覆盖结账成功后，机器人会向 `staffUserIds` 与 `logoutNotifyUserIds` 中的用户私聊同一份账单，账单会明确显示结账玩家身份。
 同一玩家在前一次退场结账尚未完成时重复发送 `/logout` 或 `/退场`，机器人会复用同一次结账请求与账单，避免重复扣款。
 账单和管理员代操作回执均使用“平台昵称（QQ：号码）”称呼玩家；平台暂时无法提供昵称时显示“未知昵称（QQ：号码）”，不会显示内部玩家 ID。
@@ -78,6 +77,9 @@ pricingConfigIds: [pricing-mahjong-a]
 * `下桌` - 自动离开当前所在麻将桌，下桌后会停止计费，并显示该麻将桌的剩余游玩人数。
 * `麻将列表` - 查看已配置机器的桌名、命令别名，以及空闲、等位或游玩中状态。
 * `api测速 [次数]` - 连续查询自己的钱包，显示 Bot 到 PRiSM API 的最小、平均与最大延迟（默认 3 次，最多 10 次）。
+* `versions` - 显示当前 Bot npm 包版本和后端发布版本；后端不可达时仍会显示 Bot 版本。
+
+Bot 版本直接读取本 npm 包的 `package.json`，后端版本读取无需认证的 `GET /version`。插件发布遵循 SemVer；修复使用 patch、兼容新增功能使用 minor、不兼容改动使用 major，发布前通过 `npm version <patch|minor|major>` 自动更新包版本。
 
 ### 管理员快捷指令
 启用 `enableStaffCommands`、配置 `staffUserIds` 白名单与 `staffSessionToken` 后可使用：
