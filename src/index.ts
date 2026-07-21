@@ -821,7 +821,7 @@ class PrismKoishiService {
       checkoutAdjustments,
       pricingCapAdjustments,
       globalCapWindows: result.globalCapWindows,
-      assetHoldings: result.assetHoldings,
+      wallet: result.wallet,
     };
     const receipt = await this.formatCheckoutPreview(synthetic, sender, title, false);
     const recipients = [...new Set([...(this.config.staffUserIds ?? []), ...(this.config.logoutNotifyUserIds ?? [])])];
@@ -1223,21 +1223,14 @@ class PrismKoishiService {
     const sessionPreviews = result.sessionPreviews as UncheckedRecord[];
     const pricingCapAdjustments = result.pricingCapAdjustments as UncheckedRecord[];
     const checkoutAdjustments = result.checkoutAdjustments as UncheckedRecord[];
-    const assetHoldings = result.assetHoldings as UncheckedRecord[];
+    const wallet = result.wallet as UncheckedRecord;
+    const balanceBefore = toNumber(wallet?.balanceBefore ?? 0);
+    const balanceAfter = toNumber(wallet?.balanceAfter ?? 0);
     const lines: string[] = [];
 
     lines.push(title);
     lines.push(await this.resolvePlayerDisplay(sender, playerId));
 
-    let balance = 0;
-    let hasBalance = false;
-    for (const holding of assetHoldings) {
-      const code = String(holding?.assetCode ?? "").toLowerCase();
-      if (code.includes("paid") || code.includes("free") || code.includes("currency")) {
-        balance += toNumber(holding?.quantity ?? 0);
-        hasBalance = true;
-      }
-    }
     const hasNonZeroSessionTotal = sessionPreviews.some((session) =>
       toNumber(session?.total ?? 0) !== 0,
     );
@@ -1245,7 +1238,7 @@ class PrismKoishiService {
     if (!hasNonZeroSessionTotal && !hasNonZeroAdjustment) {
       lines.push("");
       lines.push("本次未产生费用");
-      if (hasBalance) lines.push(`余额：${formatNumber(balance)}${currency}`);
+      lines.push(`余额：${formatNumber(isPreview ? balanceBefore : balanceAfter)}${currency}`);
       return lines.join("\n");
     }
 
@@ -1331,16 +1324,13 @@ class PrismKoishiService {
       if (visibleCheckoutAdjustments.length > 0) lines.push("");
       lines.push(`${hasManualAdjustment ? "调整后价格" : "优惠后价格"}：${formatNumber(total)}${currency}`);
     }
-    if (hasBalance) {
-      if (isPreview) {
-        const projectedBalance = balance - toNumber(total);
-        lines.push(`当前余额：${formatNumber(balance)}${currency}`);
-        lines.push(projectedBalance >= 0
-          ? `预计结账后余额：${formatNumber(projectedBalance)}${currency}`
-          : `预计结账后余额：余额不足（还差 ${formatNumber(-projectedBalance)}${currency}）`);
-      } else {
-        lines.push(`扣款后余额：${formatNumber(balance)}${currency}`);
-      }
+    if (isPreview) {
+      lines.push(`当前余额：${formatNumber(balanceBefore)}${currency}`);
+      lines.push(balanceAfter >= 0
+        ? `预计结账后余额：${formatNumber(balanceAfter)}${currency}`
+        : `预计结账后余额：余额不足（还差 ${formatNumber(-balanceAfter)}${currency}）`);
+    } else {
+      lines.push(`扣款后余额：${formatNumber(balanceAfter)}${currency}`);
     }
 
     return lines.join("\n");

@@ -73,7 +73,7 @@ function createDefaultClient() {
         adjustments: [{ label: "月卡折扣", amount: -3 }],
         checkoutAdjustments: [{ label: "月卡折扣", amount: -3 }],
         pricingCapAdjustments: [],
-        assetHoldings: [{ assetCode: "paid", quantity: 100 }],
+        wallet: { balanceBefore: 100, balanceAfter: 78 },
         globalCapWindows: [],
       };
     },
@@ -95,7 +95,7 @@ function createDefaultClient() {
         pricingCapAdjustments: [],
         globalCapWindows: [],
         assetLedgerEntries: [],
-        assetHoldings: [{ assetCode: "paid", quantity: 78 }],
+        wallet: { balanceBefore: 100, balanceAfter: 78 },
       };
     },
     async stopSessionByIdentity(input: unknown, sessionId: string) {
@@ -182,7 +182,7 @@ function createDefaultClient() {
         pricingCapAdjustments: [],
         globalCapWindows: [],
         assetLedgerEntries: [],
-        assetHoldings: [],
+        wallet: { balanceBefore: 100, balanceAfter: 100 - total },
       };
     },
   };
@@ -398,7 +398,7 @@ describe("applyPrismKoishiPlugin", () => {
         pricingCapAdjustments: [],
         globalCapWindows: [],
         assetLedgerEntries: [],
-        assetHoldings: [],
+        wallet: { balanceBefore: 100, balanceAfter: 70 },
       };
     };
 
@@ -431,7 +431,7 @@ describe("applyPrismKoishiPlugin", () => {
         pricingCapAdjustments: [],
         globalCapWindows: [],
         assetLedgerEntries: [],
-        assetHoldings: [],
+        wallet: { balanceBefore: 100, balanceAfter: 90 },
       };
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
@@ -871,7 +871,7 @@ describe("applyPrismKoishiPlugin", () => {
       pricingCapAdjustments: [],
       globalCapWindows: [],
       assetLedgerEntries: [],
-      assetHoldings: [],
+      wallet: { balanceBefore: 0, balanceAfter: 0 },
     });
 
     // Player logs out directly without calling /下桌 first
@@ -1028,7 +1028,7 @@ describe("applyPrismKoishiPlugin", () => {
       pricingCapAdjustments: [],
       globalCapWindows: [],
       assetLedgerEntries: [],
-      assetHoldings: [{ assetCode: "paid", quantity: 9791 }],
+      wallet: { balanceBefore: 9791, balanceAfter: 9791 },
     });
     const config: PrismKoishiPluginConfig = {
       provider: "qq",
@@ -1054,7 +1054,7 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).not.toContain("扣款后余额：");
   });
 
-  it("renders confirmed checkout holdings as the deducted balance", async () => {
+  it("renders the confirmed checkout wallet balance", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
     client.confirmCheckoutByIdentity = async () => ({
@@ -1078,7 +1078,7 @@ describe("applyPrismKoishiPlugin", () => {
       pricingCapAdjustments: [],
       globalCapWindows: [],
       assetLedgerEntries: [],
-      assetHoldings: [{ assetCode: "paid", quantity: 2 }],
+      wallet: { balanceBefore: 81, balanceAfter: 2 },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
       provider: "qq",
@@ -1099,6 +1099,48 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).toContain("扣款后余额：2猫粮");
     expect(result).not.toContain("当前余额：");
     expect(result).not.toContain("预计结账后余额：");
+  });
+
+  it("shows a zero confirmed wallet balance after a paid checkout", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.confirmCheckoutByIdentity = async () => ({
+      playerSettlement: { playerId: "player-1", subtotal: 10, total: 10 },
+      settlements: [{
+        settlement: {
+          sessionId: "s-1",
+          label: "🎵 音乐游戏",
+          startedAt: "2026-07-10T10:00:00.000Z",
+          endedAt: "2026-07-10T11:00:00.000Z",
+          settledAt: "2026-07-10T11:00:00.000Z",
+          subtotal: 10,
+          total: 10,
+        },
+        chargeItems: [{ label: "标准计费", amount: 10 }],
+        adjustments: [],
+      }],
+      chargeItems: [],
+      adjustments: [],
+      checkoutAdjustments: [],
+      pricingCapAdjustments: [],
+      globalCapWindows: [],
+      assetLedgerEntries: [],
+      wallet: { balanceBefore: 10, balanceAfter: 0 },
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const result = await registered.get("logout [target:user]")?.action({
+      session: { userId: "123456", senderName: "Tester" },
+    });
+
+    expect(result).toContain("扣款后余额：0猫粮");
   });
 
   it("renders negative session contributions before flooring the unified total", async () => {
@@ -1140,7 +1182,7 @@ describe("applyPrismKoishiPlugin", () => {
       pricingCapAdjustments: [],
       globalCapWindows: [],
       assetLedgerEntries: [],
-      assetHoldings: [{ assetCode: "paid", quantity: 93 }],
+      wallet: { balanceBefore: 100, balanceAfter: 93 },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
       provider: "qq",
@@ -1193,7 +1235,7 @@ describe("applyPrismKoishiPlugin", () => {
       pricingCapAdjustments: [],
       globalCapWindows: [],
       assetLedgerEntries: [],
-      assetHoldings: [{ assetCode: "paid", quantity: 0 }],
+      wallet: { balanceBefore: 0, balanceAfter: 0 },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
       provider: "qq",
@@ -1210,6 +1252,7 @@ describe("applyPrismKoishiPlugin", () => {
 
     expect(result).toContain("游玩时长：55分钟｜计价：12猫粮");
     expect(result).toContain("计费总价：12猫粮\n\n老冯：-12猫粮\n\n优惠后价格：0猫粮");
+    expect(result).toContain("余额：0猫粮");
     expect(result).not.toContain("🎟️");
     expect(result).not.toContain("优惠\n");
     expect(result).not.toContain("  └ 老冯：");
@@ -1291,7 +1334,7 @@ describe("applyPrismKoishiPlugin", () => {
         paidBefore: 54,
       }],
       assetLedgerEntries: [],
-      assetHoldings: [{ assetCode: "paid", quantity: 185 }],
+      wallet: { balanceBefore: 252, balanceAfter: 185 },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
       provider: "qq",
@@ -1351,7 +1394,7 @@ describe("applyPrismKoishiPlugin", () => {
       adjustments: [],
       checkoutAdjustments: [],
       pricingCapAdjustments: [],
-      assetHoldings: [{ assetCode: "paid", quantity: 42 }],
+      wallet: { balanceBefore: 42, balanceAfter: 12 },
       globalCapWindows: [],
     });
     const config: PrismKoishiPluginConfig = {
