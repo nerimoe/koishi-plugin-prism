@@ -26,6 +26,7 @@ export type PrismKoishiPluginConfig = {
     currencyName: string;
     enableStaffCommands?: boolean;
     staffUserIds?: string[];
+    powerCommandsAdminOnly?: boolean;
     logoutNotifyUserIds?: string[];
     mahjongTableConfigs?: MahjongTableConfigInput[];
     mahjongTableSize?: number;

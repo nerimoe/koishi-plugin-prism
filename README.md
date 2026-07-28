@@ -31,6 +31,7 @@
 | `resolveDisplayName` | `function` | - | 可选。自定义用于获取群内昵称作为玩家注册名的异步逻辑。 |
 | `enableStaffCommands` | `boolean` | `false` | 是否开启管理员快捷指令。 |
 | `staffUserIds` | `string[]` | `[]` | 允许执行管理员快捷指令的平台用户 ID（如 QQ 号）白名单。空列表不授予目标用户操作权限。 |
+| `powerCommandsAdminOnly` | `boolean` | `false` | 开关机是否仅允许 `staffUserIds` 中的管理员使用。关闭时，`/on` 和 `/off` 仍只允许已入场玩家使用。 |
 | `logoutNotifyUserIds` | `string[]` | `[]` | 结账成功后额外私聊完整账单的平台用户 ID。通知收件人为该列表与 `staffUserIds` 的去重并集。 |
 | `mahjongTableConfigs` | `object[]` | `[]` | 推荐的结构化麻将桌列表。每项填写显示名称、命令别名列表与计费方案 ID 列表。显示名称同时作为内部桌位锚点与 session 标签。 |
 
@@ -68,8 +69,8 @@ pricingConfigIds: [pricing-mahjong-a]
 * `show [deviceId]` - 查看设备电源与连接状态。
 * `history` - 查看自己的历史游玩记录。
 * `lock` - 发送开门指令。
-* `on <deviceRef>` - 使用后台设备名称、别名或 `all` 请求启动电源；不接受 Home Assistant entity ID，成功回复使用后端返回的设备名称。
-* `off <deviceRef>` - 使用后台设备名称、别名或 `all` 请求关闭电源；不接受 Home Assistant entity ID，`all` 显示为“所有设备”。
+* `on <deviceRef>` - 使用后台设备名称、别名或 `all` 请求启动电源；仅已通过 `login`/`入场` 开启活跃计费 session 的玩家可用。不接受 Home Assistant entity ID，成功回复使用后端返回的设备名称。
+* `off <deviceRef>` - 使用后台设备名称、别名或 `all` 请求关闭电源；与 `/on` 一样仅允许已入场玩家使用，不接受 Home Assistant entity ID，`all` 显示为“所有设备”。
 * `coin <deviceId> [count]` - 请求向指定设备投币指定枚数。
 * `scan <deviceId> <subject>` - 请求向设备发送模拟刷卡。
 * `redeem <code>` - 兑换礼物码。

@@ -16,6 +16,7 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   loginSessionLabel: Schema.string().default("音游区间").description("默认入场场次标签 (防重复入场)"),
   enableStaffCommands: Schema.boolean().default(false).description("是否启用管理员指令"),
   staffUserIds: Schema.array(Schema.string()).default([]).description("允许执行管理员指令的平台用户ID列表"),
+  powerCommandsAdminOnly: Schema.boolean().default(false).description("开关机是否仅允许管理员使用；关闭时仅已入场玩家可用"),
   logoutNotifyUserIds: Schema.array(Schema.string()).default([]).description("结账账单私聊通知的平台用户ID列表"),
   powerOffInterval: Schema.number().default(0).description("无人自动关机等待秒数 (0为禁用)"),
   mahjongTableConfigs: Schema.array(Schema.object({
@@ -61,6 +62,7 @@ export type PrismKoishiPluginConfig = {
   currencyName: string;
   enableStaffCommands?: boolean;
   staffUserIds?: string[];
+  powerCommandsAdminOnly?: boolean;
   logoutNotifyUserIds?: string[];
   mahjongTableConfigs?: MahjongTableConfigInput[];
   mahjongTableSize?: number;
@@ -460,11 +462,12 @@ class PrismApiClient {
     });
   }
 
-  async requestDeviceCommandByIdentity(identity: any, command: any) {
+  async requestDeviceCommandByIdentity(identity: any, command: any, options?: { staffOverride?: boolean }) {
     return this.request("POST", "/rpc/integration/players/by-identity/device-actions", {
       token: this.config.integrationToken,
       body: {
         ...this.identityBody(identity),
+        ...(options?.staffOverride ? { staffOverride: true } : {}),
         target: command.target,
         action: {
           type: command.type,
@@ -986,21 +989,30 @@ class PrismKoishiService {
     const anyOn = states.some((d) => d.state?.state !== "off");
     if (!anyOn) return;
     const dummySender: Sender = { id: "system", name: "system" };
-    await this.powerOff(dummySender, "all");
+    await this.power(dummySender, "all", "off", true);
   }
 
   /* ---------------------------- helpers ---------------------------------- */
 
-  private async power(sender: Sender, deviceRef: string, state: string): Promise<string> {
-    const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
-      type: state === "on" ? "power.on" : "power.off",
-      target: { kind: "facility", ref: deviceRef },
-      payload: { state },
-    });
-    const failure = this.getCommandFailureMessage(result);
-    if (failure) return `❌ 执行失败：${failure}`;
-    const deviceLabel = result.action.payload.deviceLabel;
-    return state === "on" ? `✅ ${deviceLabel} 启动成功` : `🛑 ${deviceLabel} 关闭成功`;
+  private async power(sender: Sender, deviceRef: string, state: string, systemOverride = false): Promise<string> {
+    const operation = state === "on" ? "启动" : "关闭";
+    const staffOverride = systemOverride || this.config.powerCommandsAdminOnly === true;
+    if (!systemOverride && staffOverride && !(this.config.staffUserIds ?? []).includes(sender.id)) {
+      return `${operation}失败，权限不足`;
+    }
+    try {
+      const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
+        type: state === "on" ? "power.on" : "power.off",
+        target: { kind: "facility", ref: deviceRef },
+        payload: { state },
+      }, staffOverride ? { staffOverride: true } : undefined);
+      const failure = this.getCommandFailureMessage(result);
+      if (failure) return `${operation}失败，${failure}`;
+      const deviceLabel = result.action.payload.deviceLabel;
+      return state === "on" ? `✅ ${deviceLabel} 启动成功` : `🛑 ${deviceLabel} 关闭成功`;
+    } catch (error) {
+      return `${operation}失败，${powerFailureReason(error)}`;
+    }
   }
 
   private getCommandFailureMessage(result: any): string | null {
@@ -1361,6 +1373,9 @@ export function humanReadableBotError(error: PrismBotClientError): string {
   if (error.code === "ACTIVE_SESSION_NOT_FOUND") {
     return "您当前没有进行中的计费场次。";
   }
+  if (error.code === "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION") {
+    return "操作失败，玩家未入场";
+  }
   if (error.code === "PLAYER_IDENTITY_NOT_FOUND") {
     return "未找到您的玩家身份，请先注册或绑定账号。";
   }
@@ -1380,6 +1395,16 @@ export function humanReadableBotError(error: PrismBotClientError): string {
     return "缺少管理面板令牌。";
   }
   return String(error?.message ?? error);
+}
+
+function powerFailureReason(error: unknown): string {
+  if (error instanceof PrismBotClientError) {
+    if (error.code === "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION") return "玩家未入场";
+    if (error.code === "PLAYER_IDENTITY_NOT_FOUND") return "玩家未注册";
+    if (error.code === "API_UNREACHABLE" || error.code === "HTTP_0") return "无法连接后端";
+    if (error.code === "API_TIMEOUT") return "后端响应超时";
+  }
+  return error instanceof Error ? error.message : "未知错误";
 }
 
 export function resolveMahjongTableConfigs(

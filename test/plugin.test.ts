@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { applyPrismKoishiPlugin, PrismBotClientError, resolveMahjongTableConfigs, version, type PrismKoishiPluginConfig } from "../src";
+import { applyPrismKoishiPlugin, humanReadableBotError, PrismBotClientError, resolveMahjongTableConfigs, version, type PrismKoishiPluginConfig } from "../src";
 
 type RegisteredCommand = {
   description: string;
@@ -119,8 +119,8 @@ function createDefaultClient() {
       calls.push(["getSessionHistoryByIdentity", input]);
       return { sessions: [{ sessionId: "session-1", startedAt: "2026-06-07T18:00:00.000Z", endedAt: "2026-06-07T19:00:00.000Z", total: 25 }] };
     },
-    async requestDeviceCommandByIdentity(input: unknown, command: unknown) {
-      calls.push(["requestDeviceCommandByIdentity", input, command]);
+    async requestDeviceCommandByIdentity(input: unknown, command: unknown, options?: unknown) {
+      calls.push(["requestDeviceCommandByIdentity", input, command, ...(options ? [options] : [])]);
       return {
         action: {
           id: "command-1",
@@ -189,6 +189,15 @@ function createDefaultClient() {
 }
 
 describe("applyPrismKoishiPlugin", () => {
+  it("reports an inactive player with the standard failure wording", () => {
+    expect(humanReadableBotError(new PrismBotClientError(
+      "Player device command requires an active session.",
+      "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION",
+      400,
+      {},
+    ))).toBe("操作失败，玩家未入场");
+  });
+
   it("resolves structured mahjong table configuration", () => {
     const tables = resolveMahjongTableConfigs([
       { displayName: "雀友四口麻将机", aliases: ["a", "四麻A"], pricingConfigIds: ["pricing-a"] },
@@ -688,7 +697,66 @@ describe("applyPrismKoishiPlugin", () => {
     });
 
     const failedResult = await registered.get("on <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1");
-    expect(failedResult).toContain("❌ 执行失败：设备不存在");
+    expect(failedResult).toBe("启动失败，设备不存在");
+  });
+
+  it("requires players to be active for both power commands", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.requestDeviceCommandByIdentity = async () => {
+      throw new PrismBotClientError(
+        "Player device command requires an active session.",
+        "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION",
+        400,
+        {},
+      );
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const context = { session: { userId: "player-1" } };
+    await expect(registered.get("on <deviceRef>")?.action(context, "maimai")).resolves.toBe(
+      "启动失败，玩家未入场",
+    );
+    await expect(registered.get("off <deviceRef>")?.action(context, "maimai")).resolves.toBe(
+      "关闭失败，玩家未入场",
+    );
+  });
+
+  it("supports administrator-only power commands", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      powerCommandsAdminOnly: true,
+      staffUserIds: ["admin-1"],
+      client: client as any,
+    });
+
+    await expect(registered.get("on <deviceRef>")?.action(
+      { session: { userId: "player-1" } },
+      "maimai",
+    )).resolves.toBe("启动失败，权限不足");
+    await expect(registered.get("off <deviceRef>")?.action(
+      { session: { userId: "admin-1" } },
+      "maimai",
+    )).resolves.toContain("关闭成功");
+    expect(client.calls).toContainEqual([
+      "requestDeviceCommandByIdentity",
+      expect.objectContaining({ subject: "admin-1" }),
+      expect.objectContaining({ type: "power.off" }),
+      { staffOverride: true },
+    ]);
   });
 
   it("uses the backend device label for power replies without special-casing all", async () => {
