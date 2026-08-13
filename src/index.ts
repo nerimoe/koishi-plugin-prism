@@ -37,6 +37,7 @@ export class PrismBotClientError extends Error {
     public readonly code: string,
     public readonly status: number,
     public readonly body: unknown,
+    public readonly originalError?: unknown,
   ) {
     super(message);
     this.name = "PrismBotClientError";
@@ -97,6 +98,9 @@ export type KoishiCommandBuilder = {
 export type KoishiLikeContext = {
   command(name: string, description: string): KoishiCommandBuilder;
   setInterval?(handler: () => Promise<void> | void, intervalMs: number): void;
+  logger?(name: string): {
+    warn(...args: unknown[]): void;
+  };
 };
 
 export type KoishiActionContext = {
@@ -358,17 +362,21 @@ class PrismApiClient {
       }
       return response;
     } catch (error: any) {
-      if (error.response && error.response.data) {
-        const body = error.response.data;
-        const err = body.error || {};
+      if (error?.response) {
+        const body = error.response.data ?? {};
+        const err = typeof body === "object" && body !== null && typeof body.error === "object"
+          ? body.error
+          : {};
+        const status = Number(error.response.status) || 500;
         throw new PrismBotClientError(
-          err.message || error.message,
-          err.code || "API_ERROR",
-          error.response.status || 500,
+          typeof err.message === "string" ? err.message : `Backend request failed with HTTP ${status}.`,
+          typeof err.code === "string" ? err.code : `HTTP_${status}`,
+          status,
           body,
+          error,
         );
       }
-      throw new PrismBotClientError(error.message || "Network error", "NETWORK_ERROR", 500, {});
+      throw new PrismBotClientError("Unable to reach PRiSM backend.", "API_UNREACHABLE", 0, {}, error);
     }
   }
 
@@ -537,8 +545,10 @@ class PrismKoishiService {
   private readonly mahjongTables = new Map<string, MahjongTableState>();
   private readonly logoutInFlight = new Map<string, Promise<string>>();
   private readonly client: any;
+  private readonly logger?: { warn(...args: unknown[]): void };
 
   constructor(ctx: KoishiLikeContext, private readonly config: PrismKoishiPluginConfig) {
+    this.logger = ctx.logger?.("prism");
     if (config.client) {
       this.client = config.client;
     } else {
@@ -1011,6 +1021,7 @@ class PrismKoishiService {
       const deviceLabel = result.action.payload.deviceLabel;
       return state === "on" ? `✅ ${deviceLabel} 启动成功` : `🛑 ${deviceLabel} 关闭成功`;
     } catch (error) {
+      this.logCommandError(error);
       return `${operation}失败，${powerFailureReason(error)}`;
     }
   }
@@ -1349,13 +1360,17 @@ class PrismKoishiService {
   }
 
   handleCommandError(error: unknown): string {
+    this.logCommandError(error);
     if (error instanceof PrismBotClientError) {
       return humanReadableBotError(error);
     }
-    if (error instanceof Error) {
-      return `操作失败: ${error.message}`;
-    }
-    return "操作失败";
+    return genericCommandFailure();
+  }
+
+  private logCommandError(error: unknown): void {
+    this.logger?.warn("PRiSM Bot command failed", error instanceof PrismBotClientError
+      ? (error.originalError ?? error)
+      : error);
   }
 }
 
@@ -1382,29 +1397,32 @@ export function humanReadableBotError(error: PrismBotClientError): string {
   if (error.code === "INSUFFICIENT_BALANCE") {
     return "余额不足，暂时不能结账。请先充值，或由店员在后台改价后再结账。";
   }
-  if (error.code === "API_UNREACHABLE" || error.code === "HTTP_0") {
-    return "连接不到 PRiSM 后端，请确认后端服务正在运行。";
+  if (error.code === "API_UNREACHABLE" || error.code === "NETWORK_ERROR" || error.code === "HTTP_0") {
+    return genericCommandFailure();
   }
   if (error.code === "API_TIMEOUT") {
-    return "PRiSM 后端响应超时，请稍后再试。";
+    return genericCommandFailure();
   }
   if (error.code === "INVALID_JSON_RESPONSE") {
-    return "PRiSM 后端返回了非 JSON 响应，请检查后端是否正常运行。";
+    return genericCommandFailure();
   }
   if (error.code === "STAFF_TOKEN_REQUIRED") {
-    return "缺少管理面板令牌。";
+    return genericCommandFailure();
   }
-  return String(error?.message ?? error);
+  return genericCommandFailure();
 }
 
 function powerFailureReason(error: unknown): string {
   if (error instanceof PrismBotClientError) {
     if (error.code === "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION") return "玩家未入场";
     if (error.code === "PLAYER_IDENTITY_NOT_FOUND") return "玩家未注册";
-    if (error.code === "API_UNREACHABLE" || error.code === "HTTP_0") return "无法连接后端";
-    if (error.code === "API_TIMEOUT") return "后端响应超时";
+    return "请稍后再试";
   }
-  return error instanceof Error ? error.message : "未知错误";
+  return "请稍后再试";
+}
+
+function genericCommandFailure(): string {
+  return "操作失败，请稍后再试。";
 }
 
 export function resolveMahjongTableConfigs(

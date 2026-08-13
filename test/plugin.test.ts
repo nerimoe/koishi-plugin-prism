@@ -22,6 +22,23 @@ function createMockKoishiContext(registered: Map<string, RegisteredCommand>) {
   };
 }
 
+function createLoggedMockKoishiContext(
+  registered: Map<string, RegisteredCommand>,
+  warnings: unknown[][],
+) {
+  return {
+    ...createMockKoishiContext(registered),
+    logger(name: string) {
+      expect(name).toBe("prism");
+      return {
+        warn(...args: unknown[]) {
+          warnings.push(args);
+        },
+      };
+    },
+  };
+}
+
 function createDefaultClient() {
   const calls: any[] = [];
   return {
@@ -196,6 +213,83 @@ describe("applyPrismKoishiPlugin", () => {
       400,
       {},
     ))).toBe("操作失败，玩家未入场");
+  });
+
+  it("never exposes fetch URLs or raw network errors to chat", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const warnings: unknown[][] = [];
+    const ctx = createLoggedMockKoishiContext(registered, warnings) as ReturnType<typeof createLoggedMockKoishiContext> & {
+      http: { post(): Promise<never> };
+    };
+    const originalError = new TypeError(
+      "fetch https://prism-mmw2.neri.moe/rpc/integration/players/by-identity/wallet failed",
+    );
+    ctx.http = {
+      async post() {
+        throw originalError;
+      },
+    };
+    applyPrismKoishiPlugin(ctx, {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      baseUrl: "https://prism-mmw2.neri.moe",
+      integrationToken: "integration-token",
+    });
+
+    const result = await registered.get("wallet [target:user]")?.action({
+      session: { userId: "player-1" },
+    });
+
+    expect(result).toBe("操作失败，请稍后再试。");
+    expect(result).not.toContain("https://");
+    expect(result).not.toContain("fetch");
+    expect(warnings).toEqual([["PRiSM Bot command failed", originalError]]);
+  });
+
+  it("renders HTTP failures in Chinese without exposing English status text", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const warnings: unknown[][] = [];
+    const ctx = createLoggedMockKoishiContext(registered, warnings) as ReturnType<typeof createLoggedMockKoishiContext> & {
+      http: { post(): Promise<never> };
+    };
+    const originalError = {
+      message: "NOT FOUND",
+      response: { status: 404, data: "NOT FOUND" },
+    };
+    ctx.http = {
+      async post() {
+        throw originalError;
+      },
+    };
+    applyPrismKoishiPlugin(ctx, {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      baseUrl: "https://prism-mmw2.neri.moe",
+      integrationToken: "integration-token",
+    });
+
+    const result = await registered.get("wallet [target:user]")?.action({
+      session: { userId: "player-1" },
+    });
+
+    expect(result).toBe("操作失败，请稍后再试。");
+    expect(result).not.toContain("NOT FOUND");
+    expect(warnings).toEqual([["PRiSM Bot command failed", originalError]]);
+  });
+
+  it("does not expose unknown backend error messages", () => {
+    expect(humanReadableBotError(new PrismBotClientError(
+      "Internal route name and implementation details",
+      "UNKNOWN_BACKEND_ERROR",
+      500,
+      {},
+    ))).toBe("操作失败，请稍后再试。");
   });
 
   it("resolves structured mahjong table configuration", () => {
@@ -727,6 +821,39 @@ describe("applyPrismKoishiPlugin", () => {
     await expect(registered.get("off <deviceRef>")?.action(context, "maimai")).resolves.toBe(
       "关闭失败，玩家未入场",
     );
+  });
+
+  it("logs the original power-command error while keeping the reply generic", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const warnings: unknown[][] = [];
+    const client = createDefaultClient();
+    const originalError = new TypeError("fetch https://private.example/device-actions failed");
+    client.requestDeviceCommandByIdentity = async () => {
+      throw new PrismBotClientError(
+        "Unable to reach backend.",
+        "API_UNREACHABLE",
+        0,
+        {},
+        originalError,
+      );
+    };
+    applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, warnings), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const result = await registered.get("on <deviceRef>")?.action(
+      { session: { userId: "player-1" } },
+      "maimai",
+    );
+
+    expect(result).toBe("启动失败，请稍后再试");
+    expect(result).not.toContain("private.example");
+    expect(warnings).toEqual([["PRiSM Bot command failed", originalError]]);
   });
 
   it("supports administrator-only power commands", async () => {

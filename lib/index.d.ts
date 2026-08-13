@@ -7,7 +7,8 @@ export declare class PrismBotClientError extends Error {
     readonly code: string;
     readonly status: number;
     readonly body: unknown;
-    constructor(message: string, code: string, status: number, body: unknown);
+    readonly originalError?: unknown | undefined;
+    constructor(message: string, code: string, status: number, body: unknown, originalError?: unknown | undefined);
 }
 export type MahjongTableConfig = {
     tableId: string;
@@ -54,6 +55,9 @@ export type KoishiCommandBuilder = {
 export type KoishiLikeContext = {
     command(name: string, description: string): KoishiCommandBuilder;
     setInterval?(handler: () => Promise<void> | void, intervalMs: number): void;
+    logger?(name: string): {
+        warn(...args: unknown[]): void;
+    };
 };
 export type KoishiActionContext = {
     session: {
