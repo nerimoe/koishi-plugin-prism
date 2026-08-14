@@ -764,6 +764,32 @@ describe("applyPrismKoishiPlugin", () => {
     expect(redeemResult).toContain("兑换成功");
   });
 
+  it("shows plain, legacy JSON, and object device state formats", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.listDeviceStates = async () => ({
+      deviceStates: [
+        { deviceId: "plain", label: "普通格式", state: "on" },
+        { deviceId: "legacy", label: "历史格式", state: JSON.stringify({ state: "off" }) },
+        { deviceId: "object", label: "旧对象格式", state: { state: "on" } },
+      ],
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const result = await registered.get("show [deviceId]")?.action({
+      session: { userId: "player-1" },
+    });
+
+    expect(result).toBe("普通格式: on\n历史格式: off\n旧对象格式: on");
+  });
+
   it("handles command execution failure feedback from server", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);

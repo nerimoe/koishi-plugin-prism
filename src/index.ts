@@ -176,7 +176,7 @@ type PlayerGroups = {
 type DeviceStateItem = {
   deviceId?: string;
   label?: string;
-  state?: { state?: string } | null;
+  state?: string | { state?: string } | null;
   targetKind?: string;
 };
 
@@ -980,11 +980,11 @@ class PrismKoishiService {
     if (alias) {
       const matched = states.find((d) => d.deviceId === alias || d.label === alias);
       if (!matched) return `找不到设备: ${alias}`;
-      const stateVal = matched.state?.state ?? "unknown";
+      const stateVal = normalizeDeviceState(matched.state);
       return `${matched.label || matched.deviceId}: ${stateVal}`;
     }
     return states
-      .map((d) => `${d.label || d.deviceId}: ${d.state?.state ?? "unknown"}`)
+      .map((d) => `${d.label || d.deviceId}: ${normalizeDeviceState(d.state)}`)
       .join("\n");
   }
 
@@ -996,7 +996,7 @@ class PrismKoishiService {
     if (sessions.length > 0) return;
     const statesResult = (await this.client.listDeviceStates()) as UncheckedRecord;
     const states = (statesResult?.deviceStates ?? []) as DeviceStateItem[];
-    const anyOn = states.some((d) => d.state?.state !== "off");
+    const anyOn = states.some((d) => normalizeDeviceState(d.state) === "on");
     if (!anyOn) return;
     const dummySender: Sender = { id: "system", name: "system" };
     await this.power(dummySender, "all", "off", true);
@@ -1423,6 +1423,23 @@ function powerFailureReason(error: unknown): string {
 
 function genericCommandFailure(): string {
   return "操作失败，请稍后再试。";
+}
+
+function normalizeDeviceState(value: DeviceStateItem["state"]): string {
+  if (typeof value === "object" && value !== null) {
+    return cleanText(value.state) || "unknown";
+  }
+  const raw = cleanText(value);
+  if (!raw) return "unknown";
+  if (raw.startsWith("{")) {
+    try {
+      const decoded = JSON.parse(raw) as { state?: unknown };
+      return cleanText(decoded?.state) || "unknown";
+    } catch {
+      return raw;
+    }
+  }
+  return raw;
 }
 
 export function resolveMahjongTableConfigs(

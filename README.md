@@ -69,6 +69,7 @@ pricingConfigIds: [pricing-mahjong-a]
 * `items` - 查看当前玩家持有的道具或资产。
 * `list` - 查看当前在线/在店游玩玩家的列表，按 session 标签分组并对同一玩家去重；存在非音乐游戏 session 时取最新的非音乐标签，麻将桌显示当前人数和容量。已开局桌位由后端 session 恢复；未满桌候座由机器人进程暂存，机器人重启后不会保留。
 * `show [deviceId]` - 查看设备电源与连接状态。
+设备状态按后端的普通字符串契约显示；插件仍兼容历史数据库中的 JSON 字符串状态，避免旧记录显示为 `unknown`。
 * `history` - 查看自己的历史游玩记录。
 * `lock` - 发送开门指令。
 * `on <deviceRef>` - 使用后台设备名称、别名或 `all` 请求启动电源；仅已通过 `login`/`入场` 开启活跃计费 session 的玩家可用。不接受 Home Assistant entity ID，成功回复使用后端返回的设备名称。
