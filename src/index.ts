@@ -16,7 +16,7 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   loginSessionLabel: Schema.string().default("音游区间").description("默认入场场次标签 (防重复入场)"),
   enableStaffCommands: Schema.boolean().default(false).description("是否启用管理员指令"),
   staffUserIds: Schema.array(Schema.string()).default([]).description("允许执行管理员指令的平台用户ID列表"),
-  powerCommandsAdminOnly: Schema.boolean().default(false).description("开关机是否仅允许管理员使用；关闭时仅已入场玩家可用"),
+  powerCommandsAdminOnly: Schema.boolean().default(false).description("关机是否仅允许管理员使用；开机始终仅已入场玩家可用"),
   logoutNotifyUserIds: Schema.array(Schema.string()).default([]).description("结账账单私聊通知的平台用户ID列表"),
   powerOffInterval: Schema.number().default(0).description("无人自动关机等待秒数 (0为禁用)"),
   mahjongTableConfigs: Schema.array(Schema.object({
@@ -126,8 +126,8 @@ const USAGE: Record<string, string> = {
   api_benchmark: "/api测速 [次数]",
   prism_on: "/prism on <设备名|别名|all>",
   prism_off: "/prism off <设备名|别名|all>",
-  prism_coin: "/prism coin <设备ID> [数量]",
-  prism_scan: "/prism scan <设备ID> <卡号>",
+  prism_coin: "/prism coin <设备名或别名> [数量]",
+  prism_scan: "/prism scan <设备名或别名>",
   prism_redeem: "/prism redeem <兑换码>",
   list: "/list",
   show: "/show [设备ID]",
@@ -271,12 +271,12 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.powerOff(await service.sender(context), deviceRef),
   ));
 
-  ctx.command("coin <deviceId> [count]", "请求向指定设备投币").action(
-    wrap(async (context, deviceId, count) => service.coin(await service.sender(context), deviceId, count)),
+  ctx.command("coin <deviceRef> [count]", "请求向指定设备投币").action(
+    wrap(async (context, deviceRef, count) => service.coin(await service.sender(context), deviceRef, count)),
   );
 
-  ctx.command("scan <deviceId> <subject>", "请求指定设备模拟刷卡").action(
-    wrap(async (context, deviceId, subject) => service.scan(await service.sender(context), deviceId, subject)),
+  ctx.command("scan <deviceRef>", "使用当前玩家绑定的 Aime 卡刷卡").action(
+    wrap(async (context, deviceRef) => service.scan(await service.sender(context), deviceRef)),
   );
 
   ctx.command("redeem <code>", "兑换 PRiSM 礼物码").action(wrap(async (context, code) =>
@@ -492,13 +492,12 @@ class PrismApiClient {
         ...this.identityBody(identity),
         target: {
           kind: "game_machine",
-          id: scan.deviceId,
+          ref: scan.deviceRef,
         },
         action: {
           type: "aime.scan",
           payload: {
             provider: scan.provider,
-            subject: scan.subject,
           },
         },
       },
@@ -916,33 +915,49 @@ class PrismKoishiService {
     return this.power(sender, deviceRef, "off");
   }
 
-  async coin(sender: Sender, rawDeviceId: string, rawCount: string): Promise<string> {
-    const deviceId = cleanText(rawDeviceId);
-    if (!deviceId) return commandUsage("prism_coin");
+  async coin(sender: Sender, rawDeviceRef: string, rawCount: string): Promise<string> {
+    const deviceRef = cleanText(rawDeviceRef);
+    if (!deviceRef) return commandUsage("prism_coin");
     const { value, error } = parsePositiveInt(rawCount, "prism_coin", "数量", 1);
     if (error) return error;
-    const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
-      type: "coin",
-      target: { kind: "game_machine", id: deviceId },
-      payload: { count: value },
-    });
-    const failure = this.getCommandFailureMessage(result);
-    if (failure) return `❌ 执行失败：${failure}`;
-    return `🪙 已为 ${deviceId} 投入 ${value} 个币`;
+    try {
+      const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
+        type: "coin",
+        target: { kind: "game_machine", ref: deviceRef },
+        payload: { count: value },
+      });
+      const failure = deviceCommandFailureReason(result);
+      if (failure) {
+        this.logDeviceCommandFailure(result);
+        return `投币失败，${failure}`;
+      }
+      const label = deviceCommandLabel(result) || deviceRef;
+      return `🪙 ${label} 投币成功（${value} 币）`;
+    } catch (error) {
+      this.logCommandError(error);
+      return `投币失败，${deviceActionFailureReason(error)}`;
+    }
   }
 
-  async scan(sender: Sender, rawDeviceId: string, rawSubject: string): Promise<string> {
-    const deviceId = cleanText(rawDeviceId);
-    const subject = cleanText(rawSubject);
-    if (!deviceId || !subject) return commandUsage("prism_scan");
-    const result = await this.client.requestScanByIdentity(this.identity(sender), {
-      deviceId,
-      provider: this.config.defaultScanProvider || "aime",
-      subject,
-    });
-    const failure = this.getCommandFailureMessage(result);
-    if (failure) return `❌ 执行失败：${failure}`;
-    return `💳 使用尾号为 ${subject.slice(-4)} 的卡刷卡成功`;
+  async scan(sender: Sender, rawDeviceRef: string): Promise<string> {
+    const deviceRef = cleanText(rawDeviceRef);
+    if (!deviceRef) return commandUsage("prism_scan");
+    try {
+      const result = await this.client.requestScanByIdentity(this.identity(sender), {
+        deviceRef,
+        provider: this.config.defaultScanProvider || "aime",
+      });
+      const failure = deviceCommandFailureReason(result);
+      if (failure) {
+        this.logDeviceCommandFailure(result);
+        return `刷卡失败，${failure}`;
+      }
+      const label = deviceCommandLabel(result) || deviceRef;
+      return `💳 ${label} 刷卡成功`;
+    } catch (error) {
+      this.logCommandError(error);
+      return `刷卡失败，${deviceActionFailureReason(error)}`;
+    }
   }
 
   async redeem(sender: Sender, rawCode: string): Promise<string> {
@@ -1006,7 +1021,7 @@ class PrismKoishiService {
 
   private async power(sender: Sender, deviceRef: string, state: string, systemOverride = false): Promise<string> {
     const operation = state === "on" ? "启动" : "关闭";
-    const staffOverride = systemOverride || this.config.powerCommandsAdminOnly === true;
+    const staffOverride = systemOverride || (state === "off" && this.config.powerCommandsAdminOnly === true);
     if (!systemOverride && staffOverride && !(this.config.staffUserIds ?? []).includes(sender.id)) {
       return `${operation}失败，权限不足`;
     }
@@ -1017,7 +1032,10 @@ class PrismKoishiService {
         payload: { state },
       }, staffOverride ? { staffOverride: true } : undefined);
       const failure = this.getCommandFailureMessage(result);
-      if (failure) return `${operation}失败，${failure}`;
+      if (failure) {
+        this.logDeviceCommandFailure(result);
+        return `${operation}失败，${deviceCommandFailureReason(result)}`;
+      }
       const deviceLabel = result.action.payload.deviceLabel;
       return state === "on" ? `✅ ${deviceLabel} 启动成功` : `🛑 ${deviceLabel} 关闭成功`;
     } catch (error) {
@@ -1372,6 +1390,11 @@ class PrismKoishiService {
       ? (error.originalError ?? error)
       : error);
   }
+
+  private logDeviceCommandFailure(result: unknown): void {
+    const action = (result as UncheckedRecord)?.action as UncheckedRecord | undefined;
+    this.logger?.warn("PRiSM device command failed", action?.payload?.executorFailure ?? action);
+  }
 }
 
 /* ------------------------------ utilities --------------------------------- */
@@ -1419,6 +1442,28 @@ function powerFailureReason(error: unknown): string {
     return "请稍后再试";
   }
   return "请稍后再试";
+}
+
+function deviceActionFailureReason(error: unknown): string {
+  if (!(error instanceof PrismBotClientError)) return "请稍后再试";
+  if (error.code === "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION") return "玩家未入场";
+  if (error.code === "DEVICE_NOT_FOUND") return "设备不存在";
+  if (error.code === "SCAN_IDENTITY_NOT_BOUND_TO_PLAYER") return "玩家未绑定 Aime 卡";
+  if (error.code === "COIN_COMMAND_COOLDOWN_ACTIVE") return "投币冷却中，请稍后再试";
+  return "请稍后再试";
+}
+
+function deviceCommandFailureReason(result: unknown): string | null {
+  const action = (result as UncheckedRecord)?.action as UncheckedRecord | undefined;
+  if (!action || (action.status !== "expired" && action.status !== "rejected")) return null;
+  const message = cleanText(action.payload?.executorFailure?.message);
+  if (message.includes("没有在线客户端")) return "设备未连接";
+  if (message.includes("设备配置不存在")) return "设备未配置";
+  return "请稍后再试";
+}
+
+function deviceCommandLabel(result: unknown): string {
+  return cleanText((result as UncheckedRecord)?.action?.payload?.deviceLabel);
 }
 
 function genericCommandFailure(): string {

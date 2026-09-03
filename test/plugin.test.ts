@@ -148,7 +148,7 @@ function createDefaultClient() {
     },
     async requestScanByIdentity(input: unknown, scan: unknown) {
       calls.push(["requestScanByIdentity", input, scan]);
-      return { command: { id: "scan-1" } };
+      return { action: { id: "scan-1", status: "acked", payload: { deviceLabel: "舞萌一号" } } };
     },
     async redeemCodeByIdentity(input: unknown, code: string) {
       calls.push(["redeemCodeByIdentity", input, code]);
@@ -336,8 +336,8 @@ describe("applyPrismKoishiPlugin", () => {
       "lock",
       "on <deviceRef>",
       "off <deviceRef>",
-      "coin <deviceId> [count]",
-      "scan <deviceId> <subject>",
+      "coin <deviceRef> [count]",
+      "scan <deviceRef>",
       "redeem <code>",
       "add <target:user> <amount:number>",
       "del <target:user> <amount:number>",
@@ -756,10 +756,15 @@ describe("applyPrismKoishiPlugin", () => {
         payload: { state: "on" },
       },
     ]);
-    const coinResult = await registered.get("coin <deviceId> [count]")?.action({ session: { userId: "123456" } }, "ai-1", "2");
-    expect(coinResult).toContain("2 个币");
-    const scanResult = await registered.get("scan <deviceId> <subject>")?.action({ session: { userId: "123456" } }, "aime-1", "card-4321");
-    expect(scanResult).toContain("尾号为 4321");
+    const coinResult = await registered.get("coin <deviceRef> [count]")?.action({ session: { userId: "123456" } }, "ai-1", "2");
+    expect(coinResult).toContain("maimai 投币成功（2 币）");
+    const scanResult = await registered.get("scan <deviceRef>")?.action({ session: { userId: "123456" } }, "aime-1");
+    expect(scanResult).toContain("舞萌一号 刷卡成功");
+    expect(client.calls).toContainEqual([
+      "requestScanByIdentity",
+      expect.anything(),
+      { deviceRef: "aime-1", provider: "aime" },
+    ]);
     const redeemResult = await registered.get("redeem <code>")?.action({ session: { userId: "123456" } }, "PRISM-2026");
     expect(redeemResult).toContain("兑换成功");
   });
@@ -790,9 +795,68 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).toBe("普通格式: on\n历史格式: off\n旧对象格式: on");
   });
 
+  it("keeps remote device failures concise and does not expose backend details", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const warnings: unknown[][] = [];
+    const client = createDefaultClient();
+    applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, warnings), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    client.requestDeviceCommandByIdentity = async () => {
+      throw new PrismBotClientError("Machine ref was not found.", "DEVICE_NOT_FOUND", 400, {});
+    };
+    await expect(registered.get("coin <deviceRef> [count]")?.action(
+      { session: { userId: "player-1" } },
+      "不存在",
+      "1",
+    )).resolves.toBe("投币失败，设备不存在");
+
+    client.requestScanByIdentity = async () => {
+      throw new PrismBotClientError(
+        "No Aime identity for player.",
+        "SCAN_IDENTITY_NOT_BOUND_TO_PLAYER",
+        400,
+        {},
+      );
+    };
+    await expect(registered.get("scan <deviceRef>")?.action(
+      { session: { userId: "player-1" } },
+      "舞萌左机",
+    )).resolves.toBe("刷卡失败，玩家未绑定 Aime 卡");
+
+    client.requestDeviceCommandByIdentity = async () => ({
+      action: {
+        status: "expired",
+        payload: {
+          executorFailure: {
+            message: "Hinata IO request to https://private.example failed",
+          },
+        },
+      },
+    });
+    const failed = await registered.get("coin <deviceRef> [count]")?.action(
+      { session: { userId: "player-1" } },
+      "舞萌左机",
+      "1",
+    );
+    expect(failed).toBe("投币失败，请稍后再试");
+    expect(failed).not.toContain("private.example");
+    expect(warnings).toHaveLength(3);
+    expect(warnings[2]).toContainEqual({
+      message: "Hinata IO request to https://private.example failed",
+    });
+  });
+
   it("handles command execution failure feedback from server", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const ctx = createMockKoishiContext(registered);
+    const warnings: unknown[][] = [];
+    const ctx = createLoggedMockKoishiContext(registered, warnings);
     const client = createDefaultClient();
     applyPrismKoishiPlugin(ctx, {
       provider: "qq",
@@ -817,7 +881,11 @@ describe("applyPrismKoishiPlugin", () => {
     });
 
     const failedResult = await registered.get("on <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1");
-    expect(failedResult).toBe("启动失败，设备不存在");
+    expect(failedResult).toBe("启动失败，请稍后再试");
+    expect(warnings).toContainEqual([
+      "PRiSM device command failed",
+      { message: "设备不存在" },
+    ]);
   });
 
   it("requires players to be active for both power commands", async () => {
@@ -897,9 +965,14 @@ describe("applyPrismKoishiPlugin", () => {
     });
 
     await expect(registered.get("on <deviceRef>")?.action(
-      { session: { userId: "player-1" } },
+      { session: { userId: "admin-1" } },
       "maimai",
-    )).resolves.toBe("启动失败，权限不足");
+    )).resolves.toContain("启动成功");
+    expect(client.calls).toContainEqual([
+      "requestDeviceCommandByIdentity",
+      expect.objectContaining({ subject: "admin-1" }),
+      expect.objectContaining({ type: "power.on" }),
+    ]);
     await expect(registered.get("off <deviceRef>")?.action(
       { session: { userId: "admin-1" } },
       "maimai",
