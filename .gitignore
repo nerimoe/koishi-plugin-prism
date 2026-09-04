@@ -13,6 +13,7 @@ jspm_packages/
 
 # Compiler outputs
 dist/
+lib/
 
 # OS metadata
 .DS_Store
