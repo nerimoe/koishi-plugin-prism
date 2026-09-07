@@ -71,7 +71,7 @@ pricingConfigIds: [pricing-mahjong-a]
 * `show [deviceId]` - 查看设备电源与连接状态。
 设备状态按后端的普通字符串契约显示；插件仍兼容历史数据库中的 JSON 字符串状态，避免旧记录显示为 `unknown`。
 * `history` - 查看自己的历史游玩记录。
-* `lock` - 发送开门指令。
+* `lock` - 为默认 TTLock 门锁生成一个 8 位随机临时密码（有效期 3 分钟）并回复密码。
 * `on <deviceRef>` - 使用后台设备名称、别名或 `all` 请求启动电源；仅已通过 `login`/`入场` 开启活跃计费 session 的玩家可用。不接受 Home Assistant entity ID，成功回复使用后端返回的设备名称。
 * `off <deviceRef>` - 使用后台设备名称、别名或 `all` 请求关闭电源；与 `/on` 一样仅允许已入场玩家使用，不接受 Home Assistant entity ID，`all` 显示为“所有设备”。
 * `coin <设备名或别名> [count]` - 请求向后台配置的 Hinata IO 设备投币；需要玩家已入场。

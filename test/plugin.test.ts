@@ -769,6 +769,30 @@ describe("applyPrismKoishiPlugin", () => {
     expect(redeemResult).toContain("兑换成功");
   });
 
+  it("returns the generated TTLock temporary password from lock", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.requestDeviceCommandByIdentity = async () => ({
+      action: {
+        executorKind: "ttlock",
+        status: "acked",
+        payload: { temporaryPassword: "12345678" },
+      },
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    await expect(registered.get("lock")?.action({ session: { userId: "123456" } })).resolves.toBe(
+      "🔑 临时门锁密码：12345678\n有效期：3 分钟",
+    );
+  });
+
   it("shows plain, legacy JSON, and object device state formats", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();

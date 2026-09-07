@@ -896,11 +896,26 @@ class PrismKoishiService {
   }
 
   async lock(sender: Sender): Promise<string> {
-    await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
-      type: "door.open",
-      target: { kind: "facility", ref: this.config.defaultDoorDeviceId },
-    });
-    return "🔑 门锁指令已发送";
+    try {
+      const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
+        type: "door.open",
+        target: { kind: "facility", ref: this.config.defaultDoorDeviceId },
+      });
+      const failure = this.getCommandFailureMessage(result);
+      if (failure) {
+        this.logDeviceCommandFailure(result);
+        return `🔑 开门失败，${deviceCommandFailureReason(result)}`;
+      }
+      if (result?.action?.executorKind && result.action.executorKind !== "ttlock") {
+        return "🔑 门锁指令已发送";
+      }
+      const password = cleanText(result?.action?.payload?.temporaryPassword);
+      if (!password) return "🔑 临时门锁密码生成失败，请稍后再试";
+      return `🔑 临时门锁密码：${password}\n有效期：3 分钟`;
+    } catch (error) {
+      this.logCommandError(error);
+      return `🔑 开门失败，${deviceActionFailureReason(error)}`;
+    }
   }
 
   async powerOn(sender: Sender, rawDeviceRef: string): Promise<string> {
