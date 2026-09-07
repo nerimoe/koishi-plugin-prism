@@ -793,6 +793,35 @@ describe("applyPrismKoishiPlugin", () => {
     );
   });
 
+  it("does not report a password when TTLock generation fails", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.requestDeviceCommandByIdentity = async () => ({
+      action: {
+        executorKind: "ttlock",
+        status: "expired",
+        payload: {
+          executorFailure: {
+            executorKind: "ttlock",
+            message: "TTLock 请求失败（10004）",
+          },
+        },
+      },
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq",
+      autoRegister: true,
+      defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime",
+      currencyName: "猫粮",
+      client: client as any,
+    });
+
+    const result = await registered.get("lock")?.action({ session: { userId: "123456" } });
+    expect(result).toBe("🔑 开门失败，请稍后再试");
+    expect(result).not.toMatch(/\d{8}/);
+  });
+
   it("shows plain, legacy JSON, and object device state formats", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
