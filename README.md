@@ -109,6 +109,17 @@ Bot 版本直接读取本 npm 包的 `package.json`，后端版本读取无需�
    bun run test
    ```
 
+### CI 自动发布
+
+发布使用 GitHub Actions 的 npm Trusted Publishing。修改版本后推送带 `v` 前缀且与 `package.json` 一致的标签即可自动测试、构建并发布：
+
+```bash
+npm version patch
+git push origin main --follow-tags
+```
+
+首次使用前，在 npm 包设置的 Trusted Publisher 中选择 GitHub Actions，填写仓库 `nerimoe/koishi-plugin-prism` 和工作流文件名 `publish.yml`，并允许 `npm publish`。
+
 ## 📄 开源协议
 
 [MIT License](LICENSE)
