@@ -1132,12 +1132,12 @@ ${table.players.map(player => player.name).join("、")}`),
 
     for (const player of players.values()) {
       player.displayName = await this.displayNameForPlayer(player);
-      const nonMusic = player.sessions.filter((session) => Boolean(session.label) && session.label !== musicLabel);
+      const nonMusic = player.sessions.filter((session) => Boolean(session.label) && session.label !== "entry" && session.label !== musicLabel);
       const source = nonMusic.length > 0 ? nonMusic : player.sessions;
       const selected = source.reduce((latest, session) =>
         !latest || sessionStartedAt(session) > sessionStartedAt(latest) ? session : latest,
         undefined as ActiveSessionListItem | undefined);
-      const label = selected?.label || musicLabel;
+      const label = selected?.label === "entry" ? musicLabel : selected?.label || musicLabel;
       let group = groupByLabel.get(label);
       if (!group) {
         group = { label, table: tableByLabel.get(label), players: [] };
@@ -1242,7 +1242,7 @@ ${table.players.map(player => player.name).join("、")}`),
   private hasEntrySession(playerId: string, sessions: readonly ActiveSessionListItem[]): boolean {
     const label = this.config.loginSessionLabel?.trim();
     return sessions.some((session) =>
-      session.playerId === playerId && (label ? session.label === label : true),
+      session.playerId === playerId && (session.label === "entry" || (label ? session.label === label : true)),
     );
   }
 
@@ -1337,7 +1337,7 @@ ${table.players.map(player => player.name).join("、")}`),
     }
 
     for (const sPrev of sessionPreviews) {
-      const label = sPrev?.label || "计时区间";
+      const label = sPrev?.label === "entry" ? this.config.loginSessionLabel?.trim() || "音游区间" : sPrev?.label || "计时区间";
       const startDt = parseDateTime(sPrev?.startedAt);
       const endDt = sessionDisplayEnd(sPrev, previewedAt);
       const status = sPrev?.status ?? "active";

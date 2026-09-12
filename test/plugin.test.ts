@@ -1089,6 +1089,20 @@ describe("applyPrismKoishiPlugin", () => {
     expect(client.calls.filter((call) => call[0] === "startSessionByIdentity")).toHaveLength(0);
   });
 
+  it("recognizes canonical platform entry sessions for Mahjong and roster grouping", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.listActiveSessions = async () => ({ sessions: [{ id: "entry-1", playerId: "player-1", label: "entry", identities: [{ provider: "qq", subject: "2034994588" }] }] });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime", currencyName: "猫粮", loginSessionLabel: "音乐游戏",
+      mahjongTableConfigs: [{ displayName: "麻将", aliases: ["a"], pricingConfigIds: ["mahjong"] }], client: client as any,
+    });
+    const context = { session: { userId: "2034994588", senderName: "Player" } };
+    expect(await registered.get("list")?.action(context)).toContain("音乐游戏");
+    expect(await registered.get("上桌 [tableId]")?.action(context, "a")).toContain("已加入");
+  });
+
   it("registers and runs mahjong commands", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
