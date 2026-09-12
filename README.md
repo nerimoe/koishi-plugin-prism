@@ -22,6 +22,7 @@
 | 配置项 | 类型 | 默认值 | 描述 |
 | :--- | :---: | :---: | :--- |
 | `baseUrl` | `string` | - | **必填**。PRiSM Next Server 的访问基准 URL（如 `https://prism-mmw.neri.moe`）。 |
+| `shopCode` | `string` | - | 统一平台的店铺公开编号；单店兼容部署留空。 |
 | `integrationToken` | `string` | - | **必填**。从 PRiSM 网页后台生成的 Integration API 令牌。 |
 | `provider` | `string` | `"qq"` | 当前绑定的账号提供商平台名称（如 `"qq"`，`"discord"`）。 |
 | `autoRegister` | `boolean` | `true` | 当玩家未注册时，是否在首次操作（如入场/查钱包）时自动在 PRiSM 中创建新玩家。 |
@@ -36,6 +37,14 @@
 | `powerCommandsAdminOnly` | `boolean` | `false` | 关机是否仅允许 `staffUserIds` 中的管理员使用。`/on` 始终只允许已入场玩家使用。 |
 | `logoutNotifyUserIds` | `string[]` | `[]` | 结账成功后额外私聊完整账单的平台用户 ID。通知收件人为该列表与 `staffUserIds` 的去重并集。 |
 | `mahjongTableConfigs` | `object[]` | `[]` | 推荐的结构化麻将桌列表。每项填写显示名称、命令别名列表与计费方案 ID 列表。显示名称同时作为内部桌位锚点与 session 标签。 |
+
+### 统一平台
+
+配置 `baseUrl`、`shopCode` 和本店的 Integration 令牌后，插件调用 `/api/v1/shops/:shopCode/integration`；单店兼容部署调用 `/api/v1/integration`。
+
+玩家在网页取得验证码后，向 Bot 发送 `prism.bind 验证码`。绑定使用消息发送人的 QQ，不接受代填 QQ。允许哪些群或私聊使用此指令，由店家在 Bot 框架中配置过滤；后端和插件不再维护群白名单或群聊/私聊限制。网页账号可以跨店使用，QQ 验证和余额分别属于各店；默认只允许绑定本店已有玩家，店主可以开启新玩家注册。
+
+统一平台以店铺的入场规则和注册开关为准。Web 与 Bot 普通入场共享去重；显式的麻将规则继续使用桌位流程。店铺启用入场、出场或机器操作定位时，对应 Bot 操作会返回本店网页地址。玩家余额不足时结账失败并继续计时。
 
 ### 麻将桌配置
 
@@ -123,3 +132,5 @@ git push origin main --follow-tags
 ## 📄 开源协议
 
 [MIT License](LICENSE)
+
+统一平台当前验收范围为 QQ 绑定与查人。查人使用后端持久化麻将桌名单，包含等待玩家，不依赖插件内存中的旧上桌记录。旧设备操作命令不属于本次上线范围。

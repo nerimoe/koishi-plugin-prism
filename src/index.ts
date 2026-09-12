@@ -7,6 +7,7 @@ export const version = packageMetadata.version;
 export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   provider: Schema.string().required().description("平台提供商 (如 qq)"),
   autoRegister: Schema.boolean().default(true).description("是否自动注册"),
+  shopCode: Schema.string().description("统一平台店铺编号（单店兼容模式留空）"),
   baseUrl: Schema.string().description("PRiSM 后端 API Base URL"),
   integrationToken: Schema.string().role("secret").description("集成 API Token"),
   currencyName: Schema.string().default("猫粮").description("代币名称"),
@@ -79,6 +80,7 @@ export type PrismKoishiPluginConfig = {
   now?: () => Date;
 
   // Connection parameters
+  shopCode?: string;
   baseUrl?: string;
   integrationToken?: string;
 
@@ -105,6 +107,8 @@ export type KoishiLikeContext = {
 
 export type KoishiActionContext = {
   session: {
+    platform?: string;
+    isDirect?: boolean;
     userId: string;
     messageId?: string;
     senderId?: string;
@@ -194,6 +198,17 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
       return context.session?.messageId ? `${h("quote", { id: context.session.messageId })}${message}` : message;
     }
   };
+
+  ctx.command("prism.bind <code:string>", "绑定网页登录账号到本店 QQ 身份").action(wrap(async (context, code) => {
+    if (context.session.platform !== "qq") return "请使用 QQ 身份发送验证码";
+    if (!config.shopCode || !config.baseUrl || !config.integrationToken) return "请店家配置统一平台店铺编号与 Bot 凭据";
+    const response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/v1/shops/${encodeURIComponent(config.shopCode)}/integration/qq-binding/confirm`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.integrationToken}` },
+      body: JSON.stringify({ code, qq: context.session.userId }),
+    });
+    const body = await response.json() as { error?: { message: string } };
+    return response.ok ? "绑定成功，请返回网页继续操作" : body.error?.message ?? "绑定失败，请重新生成验证码";
+  }));
 
   ctx.command("register", "绑定或注册当前平台用户到 PRiSM").action(wrap(async (context) =>
     service.register(await service.sender(context)),
@@ -313,6 +328,7 @@ class PrismApiClient {
   constructor(
     private readonly http: any,
     private readonly config: {
+      shopCode?: string;
       baseUrl: string;
       integrationToken: string;
     },
@@ -334,7 +350,7 @@ class PrismApiClient {
       query?: Record<string, string | number | boolean | null | undefined>;
     },
   ): Promise<T> {
-    let url = path;
+    let url = path.replace(/^\/rpc\//, this.config.shopCode ? `/api/v1/shops/${encodeURIComponent(this.config.shopCode)}/` : "/api/v1/");
     if (options.params) {
       for (const [key, value] of Object.entries(options.params)) {
         url = url.replace(`:${key}`, encodeURIComponent(String(value)));
@@ -360,7 +376,7 @@ class PrismApiClient {
       } else {
         throw new Error(`Unsupported method ${method}`);
       }
-      return response;
+      return response && typeof response === "object" && Object.hasOwn(response, "data") ? response.data : response;
     } catch (error: any) {
       if (error?.response) {
         const body = error.response.data ?? {};
@@ -576,6 +592,7 @@ class PrismKoishiService {
       };
       this.client = new PrismApiClient(http, {
         baseUrl: config.baseUrl,
+        shopCode: config.shopCode,
         integrationToken: config.integrationToken,
       });
     }
@@ -998,7 +1015,17 @@ class PrismKoishiService {
     const players = groupSessionsByPlayer(sessions);
     const groups = await this.buildPlayerGroups(players, tableByLabel);
     this.mergeWaitingSeats(groups);
-    return formatPlayerGroups(groups, this.config.mahjongTableSize ?? 4);
+    const tables = result.mahjongTables as {id:string;name:string;capacity:number;players:{id:string;name:string}[]}[] | undefined;
+    if (!tables) return formatPlayerGroups(groups, this.config.mahjongTableSize ?? 4);
+    const seated = new Set(tables.flatMap(table => table.players.map(player => player.id)));
+    for (const group of groups.groups) group.players = group.players.filter(player => !seated.has(player.playerId));
+    return [
+      formatPlayerGroups(groups, this.config.mahjongTableSize ?? 4),
+      ...tables.map(table => `
+${table.name}（${table.players.length}/${table.capacity}）：
+${table.players.map(player => player.name).join("、")}`),
+    ].filter(Boolean).join("\n");
+
   }
 
   async listDeviceStates(rawAlias?: string): Promise<string> {
@@ -1395,6 +1422,9 @@ class PrismKoishiService {
   handleCommandError(error: unknown): string {
     this.logCommandError(error);
     if (error instanceof PrismBotClientError) {
+      if (error.code?.startsWith("LOCATION_") && this.config.shopCode && this.config.baseUrl) {
+        return `请在网页完成到店校验：${this.config.baseUrl.replace(/\/+$/, "")}/t/${encodeURIComponent(this.config.shopCode)}`;
+      }
       return humanReadableBotError(error);
     }
     return genericCommandFailure();

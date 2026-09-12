@@ -317,6 +317,7 @@ describe("applyPrismKoishiPlugin", () => {
     applyPrismKoishiPlugin(ctx, config);
 
     const expected = [
+      "prism.bind <code:string>",
       "register",
       "login [target:user]",
       "入场 [target:user]",
@@ -1808,4 +1809,46 @@ describe("applyPrismKoishiPlugin", () => {
       label: "大洋化学",
     }]);
   });
+});
+
+
+it("binds the actual QQ sender while channel filtering belongs to the Bot framework", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+    provider: "qq", shopCode: "shop-a", baseUrl: "https://prism.test", integrationToken: "test-token",
+    client: createDefaultClient() as any,
+  });
+  const command = registered.get("prism.bind <code:string>")!;
+  const originalFetch = globalThis.fetch;
+  const calls: { url: string; body: unknown }[] = [];
+  globalThis.fetch = (async (url, init) => {
+    calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+    return Response.json({ data: { verified: true } });
+  }) as typeof fetch;
+  try {
+    expect(await command.action({ session: { platform: "discord", userId: "123456" } }, "ABCD12")).toContain("QQ");
+    expect(calls).toHaveLength(0);
+    for (const isDirect of [false, true]) {
+      expect(await command.action({ session: { platform: "qq", userId: "123456", isDirect } }, "ABCD12")).toContain("绑定成功");
+    }
+    expect(calls).toEqual(Array(2).fill({ url: "https://prism.test/api/v1/shops/shop-a/integration/qq-binding/confirm", body: { code: "ABCD12", qq: "123456" } }));
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+it("uses shop-scoped v1 roster and includes persistent Mahjong waiting seats", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  const calls: string[] = [];
+  const context = {
+    ...createMockKoishiContext(registered),
+    http: { get: async (url:string, config:any) => {
+      calls.push(url);
+      expect(config.headers.Authorization).toBe("Bearer test-token");
+      return {data:{sessions:[],mahjongTables:[{id:"table",name:"麻将 A",capacity:4,players:[{id:"p",name:"等待玩家"}]}]}};
+    } },
+  };
+  applyPrismKoishiPlugin(context, {provider:"qq",shopCode:"shop-a",baseUrl:"https://prism.test",integrationToken:"test-token"});
+  const result = await registered.get("list")!.action({session:{userId:"123456"}});
+  expect(calls).toEqual(["https://prism.test/api/v1/shops/shop-a/integration/sessions/active"]);
+  expect(result).toContain("麻将 A（1/4）");
+  expect(result).toContain("等待玩家");
 });
