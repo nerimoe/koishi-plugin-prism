@@ -200,7 +200,8 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
   };
 
   ctx.command("prism.bind <code:string>", "绑定网页登录账号到本店 QQ 身份").action(wrap(async (context, code) => {
-    if (context.session.platform !== "qq") return "请使用 QQ 身份发送验证码";
+    if (!["qq", "onebot"].includes(context.session.platform ?? "")) return "请使用 QQ 身份发送验证码";
+    if (!/^[1-9]\d{4,19}$/.test(context.session.userId ?? "")) return "无法获取发送人的 QQ 号";
     if (!config.shopCode || !config.baseUrl || !config.integrationToken) return "请店家配置统一平台店铺编号与 Bot 凭据";
     const response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/v1/shops/${encodeURIComponent(config.shopCode)}/integration/qq-binding/confirm`, {
       method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.integrationToken}` },
@@ -1020,7 +1021,9 @@ class PrismKoishiService {
     const seated = new Set(tables.flatMap(table => table.players.map(player => player.id)));
     for (const group of groups.groups) group.players = group.players.filter(player => !seated.has(player.playerId));
     return [
-      formatPlayerGroups(groups, this.config.mahjongTableSize ?? 4),
+      formatPlayerGroups(groups, this.config.mahjongTableSize ?? 4, new Set([
+        ...seated, ...groups.groups.flatMap(group => group.players.map(player => player.playerId)),
+      ]).size),
       ...tables.map(table => `
 ${table.name}（${table.players.length}/${table.capacity}）：
 ${table.players.map(player => player.name).join("、")}`),
@@ -1573,9 +1576,9 @@ function sessionStartedAt(session: ActiveSessionListItem): number {
   return Number.isFinite(value) ? value : 0;
 }
 
-function formatPlayerGroups(groups: PlayerGroups, tableSize: number): string {
+function formatPlayerGroups(groups: PlayerGroups, tableSize: number, totalPlayers?: number): string {
   const populatedGroups = groups.groups.filter((group) => group.players.length > 0);
-  const total = new Set(populatedGroups.flatMap((group) => group.players.map((player) => player.playerId))).size;
+  const total = totalPlayers ?? new Set(populatedGroups.flatMap((group) => group.players.map((player) => player.playerId))).size;
   if (total === 0) return "🫥 窝里目前没有玩家呢";
 
   const lines = [`[总计 ${total} 人]`];

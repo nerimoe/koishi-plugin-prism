@@ -1826,24 +1826,26 @@ it("binds the actual QQ sender while channel filtering belongs to the Bot framew
     return Response.json({ data: { verified: true } });
   }) as typeof fetch;
   try {
-    expect(await command.action({ session: { platform: "discord", userId: "123456" } }, "ABCD12")).toContain("QQ");
+    expect(await command.action({ session: { platform: "discord", userId: "123456" } }, "ABCD2345")).toContain("QQ");
+    expect(await command.action({ session: { platform: "onebot", userId: "not-a-qq" } }, "ABCD2345")).toContain("无法获取");
     expect(calls).toHaveLength(0);
-    for (const isDirect of [false, true]) {
-      expect(await command.action({ session: { platform: "qq", userId: "123456", isDirect } }, "ABCD12")).toContain("绑定成功");
+    for (const platform of ["qq", "onebot"]) for (const isDirect of [false, true]) {
+      expect(await command.action({ session: { platform, userId: "123456", isDirect } }, "ABCD2345")).toContain("绑定成功");
     }
-    expect(calls).toEqual(Array(2).fill({ url: "https://prism.test/api/v1/shops/shop-a/integration/qq-binding/confirm", body: { code: "ABCD12", qq: "123456" } }));
+    expect(calls).toEqual(Array(4).fill({ url: "https://prism.test/api/v1/shops/shop-a/integration/qq-binding/confirm", body: { code: "ABCD2345", qq: "123456" } }));
   } finally { globalThis.fetch = originalFetch; }
 });
 
 it("uses shop-scoped v1 roster and includes persistent Mahjong waiting seats", async () => {
   const registered = new Map<string, RegisteredCommand>();
   const calls: string[] = [];
+  let sessions: any[] = [];
   const context = {
     ...createMockKoishiContext(registered),
     http: { get: async (url:string, config:any) => {
       calls.push(url);
       expect(config.headers.Authorization).toBe("Bearer test-token");
-      return {data:{sessions:[],mahjongTables:[{id:"table",name:"麻将 A",capacity:4,players:[{id:"p",name:"等待玩家"}]}]}};
+      return {data:{sessions,mahjongTables:[{id:"table",name:"麻将 A",capacity:4,players:[{id:"p",name:"等待玩家"}]}]}};
     } },
   };
   applyPrismKoishiPlugin(context, {provider:"qq",shopCode:"shop-a",baseUrl:"https://prism.test",integrationToken:"test-token"});
@@ -1851,4 +1853,13 @@ it("uses shop-scoped v1 roster and includes persistent Mahjong waiting seats", a
   expect(calls).toEqual(["https://prism.test/api/v1/shops/shop-a/integration/sessions/active"]);
   expect(result).toContain("麻将 A（1/4）");
   expect(result).toContain("等待玩家");
+  expect(result).toContain("[总计 1 人]");
+  expect(result).not.toContain("目前没有玩家");
+  sessions = [
+    { id: "s1", playerId: "p", playerDisplayName: "等待玩家", label: "音游区间" },
+    { id: "s2", playerId: "other", playerDisplayName: "音游玩家", label: "音游区间" },
+  ];
+  const mixed = await registered.get("list")!.action({session:{userId:"123456"}});
+  expect(mixed).toContain("[总计 2 人]");
+  expect(mixed.match(/等待玩家/g)).toHaveLength(1);
 });
