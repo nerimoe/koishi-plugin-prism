@@ -180,6 +180,7 @@ type PlayerGroups = {
 type DeviceStateItem = {
   deviceId?: string;
   label?: string;
+  aliases?: string[];
   state?: string | { state?: string } | null;
   targetKind?: string;
 };
@@ -1038,7 +1039,7 @@ ${table.players.map(player => player.name).join("、")}`),
     if (states.length === 0) return "没有找到任何设备状态。";
 
     if (alias) {
-      const matched = states.find((d) => d.deviceId === alias || d.label === alias);
+      const matched = states.find((d) => d.deviceId === alias || d.label === alias || d.aliases?.some((value) => value.trim().toLowerCase() === alias.toLowerCase()));
       if (!matched) return `找不到设备: ${alias}`;
       const stateVal = normalizeDeviceState(matched.state);
       return `${matched.label || matched.deviceId}: ${stateVal}`;
