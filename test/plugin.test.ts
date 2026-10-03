@@ -13,7 +13,7 @@ function createMockKoishiContext(registered: Map<string, RegisteredCommand>) {
       registered.set(name, command);
       return {
         action(handler: RegisteredCommand["action"]) {
-          command.action = handler;
+          command.action = (context, ...args) => handler({ ...context, session: { platform: "onebot", ...context.session } }, ...args);
           return this;
         },
       };
@@ -164,7 +164,7 @@ function createDefaultClient() {
             playerDisplayName: "Player 296",
             startedAt: "2026-07-08T11:38:31.000Z",
             label: "音游区间",
-            identities: [{ provider: "qq", subject: "2034994588" }],
+            identities: [{ provider: "onebot", subject: "2034994588" }],
           },
         ],
       };
@@ -230,7 +230,6 @@ describe("applyPrismKoishiPlugin", () => {
       },
     };
     applyPrismKoishiPlugin(ctx, {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -265,7 +264,6 @@ describe("applyPrismKoishiPlugin", () => {
       },
     };
     applyPrismKoishiPlugin(ctx, {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -304,7 +302,6 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       loginPricingConfigIds: ["pricing-music-standard"],
       loginSessionLabel: "音游区间",
@@ -360,7 +357,7 @@ describe("applyPrismKoishiPlugin", () => {
         },
       },
     });
-    expect(billingResult).toContain("玩家：Tester（QQ：123456）");
+    expect(billingResult).toContain("玩家：Tester（onebot:123456）");
     expect(billingResult).toContain("⏰ 游玩时间：");
     expect(billingResult).toContain("音游区间");
     expect(billingResult).toContain("游玩时长：1小时0分钟｜计价：22猫粮");
@@ -392,7 +389,6 @@ describe("applyPrismKoishiPlugin", () => {
       throw new Error("offline");
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -418,7 +414,6 @@ describe("applyPrismKoishiPlugin", () => {
       },
     };
     applyPrismKoishiPlugin(ctx, {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -439,7 +434,6 @@ describe("applyPrismKoishiPlugin", () => {
     const client = createDefaultClient();
     const broadcasts: Array<[string[], string]> = [];
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -467,7 +461,7 @@ describe("applyPrismKoishiPlugin", () => {
     expect(broadcasts).toHaveLength(1);
     expect(broadcasts[0][0]).toEqual(["private:staff-1", "private:audit-1"]);
     expect(broadcasts[0][1]).toContain("✅ 退场成功 · 结算账单");
-    expect(broadcasts[0][1]).toContain("玩家：Tester（QQ：123456）");
+    expect(broadcasts[0][1]).toContain("玩家：Tester（onebot:123456）");
     expect(broadcasts[0][1]).not.toContain("quote");
   });
 
@@ -476,7 +470,6 @@ describe("applyPrismKoishiPlugin", () => {
     const client = createDefaultClient();
     const broadcasts: Array<[string[], string]> = [];
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -538,8 +531,7 @@ describe("applyPrismKoishiPlugin", () => {
         wallet: { balanceBefore: 100, balanceAfter: 90 },
       };
     };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮", client: client as any,
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮", client: client as any,
     });
     const logout = registered.get("logout [target:user]")!.action;
     const first = logout({ session: { userId: "123456", senderName: "Tester" } });
@@ -555,7 +547,6 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -582,23 +573,23 @@ describe("applyPrismKoishiPlugin", () => {
       "overwrite <target:user> <amount:number> [reason:text]",
     ]));
     await expect(registered.get("login [target:user]")?.action(adminContext, "target-qq")).resolves.toContain("已为用户");
-    await expect(registered.get("login [target:user]")?.action(adminContext, "onebot:262661418")).resolves.toContain("已为用户 未知昵称（QQ：262661418） 入场");
+    await expect(registered.get("login [target:user]")?.action(adminContext, "onebot:262661418")).resolves.toContain("已为用户 未知昵称（onebot:262661418） 入场");
     await expect(registered.get("login [target:user]")?.action(playerContext, "target-qq")).resolves.toBe("权限不足");
     await expect(registered.get("add <target:user> <amount:number>")?.action(adminContext, "target-qq", "10")).resolves.toContain("已为用户");
     await expect(registered.get("del <target:user> <amount:number>")?.action(adminContext, "target-qq", "3")).resolves.toContain("已为用户");
     await expect(registered.get("overwrite <target:user> <amount:number> [reason:text]")?.action(adminContext, "target-qq", "30")).resolves.toContain("覆盖结账成功");
 
     expect(client.calls).toContainEqual(["adjustWalletByIdentity", {
-      provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",
+      provider: "onebot", subject: "target-qq", autoRegister: true, displayName: "target-qq",
     }, 10, "Koishi 管理员增加余额"]);
     expect(client.calls).toContainEqual(["adjustWalletByIdentity", {
-      provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",
+      provider: "onebot", subject: "target-qq", autoRegister: true, displayName: "target-qq",
     }, -3, "Koishi 管理员扣除余额"]);
     expect(client.calls).toContainEqual(["checkoutWithOverrideByIdentity", {
-      provider: "qq", subject: "target-qq", autoRegister: true, displayName: "target-qq",
+      provider: "onebot", subject: "target-qq", autoRegister: true, displayName: "target-qq",
     }, 30, "管理员调价"]);
     expect(client.calls).toContainEqual(["startSessionByIdentity", {
-      provider: "qq", subject: "262661418", autoRegister: true, displayName: "262661418",
+      provider: "onebot", subject: "262661418", autoRegister: true, displayName: "262661418",
     }, undefined]);
   });
 
@@ -608,7 +599,6 @@ describe("applyPrismKoishiPlugin", () => {
     const client = createDefaultClient();
 
     applyPrismKoishiPlugin(ctx, {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -628,7 +618,6 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -651,16 +640,15 @@ describe("applyPrismKoishiPlugin", () => {
     });
     client.listActiveSessions = async () => ({
       sessions: [
-        { id: "music-1", playerId: "player-1", playerDisplayName: "Player 1", label: "音游区间", identities: [{ provider: "qq", subject: "1" }] },
-        { id: "music-2", playerId: "player-2", playerDisplayName: "Player 2", label: "音游区间", identities: [{ provider: "qq", subject: "2" }] },
-        { id: "music-3", playerId: "player-3", playerDisplayName: "Player 3", label: "音游区间", identities: [{ provider: "qq", subject: "3" }] },
-        { id: "mahjong-3", playerId: "player-3", playerDisplayName: "Player 3", label: "🀄️ 大洋化学八口麻将机", identities: [{ provider: "qq", subject: "3" }] },
-        { id: "mahjong-4", playerId: "player-4", playerDisplayName: "Player 4", label: "🀄️ 大洋化学八口麻将机", identities: [{ provider: "qq", subject: "4" }] },
-        { id: "music-5", playerId: "player-5", playerDisplayName: "Player 5", label: "音游区间", identities: [{ provider: "qq", subject: "5" }] },
+        { id: "music-1", playerId: "player-1", playerDisplayName: "Player 1", label: "音游区间", identities: [{ provider: "onebot", subject: "1" }] },
+        { id: "music-2", playerId: "player-2", playerDisplayName: "Player 2", label: "音游区间", identities: [{ provider: "onebot", subject: "2" }] },
+        { id: "music-3", playerId: "player-3", playerDisplayName: "Player 3", label: "音游区间", identities: [{ provider: "onebot", subject: "3" }] },
+        { id: "mahjong-3", playerId: "player-3", playerDisplayName: "Player 3", label: "🀄️ 大洋化学八口麻将机", identities: [{ provider: "onebot", subject: "3" }] },
+        { id: "mahjong-4", playerId: "player-4", playerDisplayName: "Player 4", label: "🀄️ 大洋化学八口麻将机", identities: [{ provider: "onebot", subject: "4" }] },
+        { id: "music-5", playerId: "player-5", playerDisplayName: "Player 5", label: "音游区间", identities: [{ provider: "onebot", subject: "5" }] },
       ],
     });
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -695,8 +683,7 @@ describe("applyPrismKoishiPlugin", () => {
         { id: "room-2", playerId: "room", playerDisplayName: "Room", label: "活动区", startedAt: "2026-07-10T12:00:00.000Z" },
       ],
     });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
       loginSessionLabel: "音游区间", client: client as any,
     });
     const result = await registered.get("list")?.action({ session: { userId: "music" } });
@@ -710,12 +697,11 @@ describe("applyPrismKoishiPlugin", () => {
     const client = createDefaultClient();
     client.listActiveSessions = async () => ({
       sessions: [
-        { id: "music-1", playerId: "player-1", label: "音游区间", identities: [{ provider: "qq", subject: "first-subject" }] },
+        { id: "music-1", playerId: "player-1", label: "音游区间", identities: [{ provider: "onebot", subject: "first-subject" }] },
         { id: "music-2", playerId: "player-1", playerDisplayName: "Later backend name", label: "音游区间" },
       ],
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -734,7 +720,6 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -781,7 +766,6 @@ describe("applyPrismKoishiPlugin", () => {
       },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -810,7 +794,6 @@ describe("applyPrismKoishiPlugin", () => {
       },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -834,7 +817,6 @@ describe("applyPrismKoishiPlugin", () => {
       ],
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -854,7 +836,6 @@ describe("applyPrismKoishiPlugin", () => {
     const warnings: unknown[][] = [];
     const client = createDefaultClient();
     applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, warnings), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -913,7 +894,6 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createLoggedMockKoishiContext(registered, warnings);
     const client = createDefaultClient();
     applyPrismKoishiPlugin(ctx, {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -954,7 +934,6 @@ describe("applyPrismKoishiPlugin", () => {
       );
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -986,7 +965,6 @@ describe("applyPrismKoishiPlugin", () => {
       );
     };
     applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, warnings), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1008,7 +986,6 @@ describe("applyPrismKoishiPlugin", () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1049,7 +1026,6 @@ describe("applyPrismKoishiPlugin", () => {
       },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1069,7 +1045,6 @@ describe("applyPrismKoishiPlugin", () => {
     client.listActiveSessions = async () => ({ sessions: [] });
     const registered = new Map<string, RegisteredCommand>();
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1092,9 +1067,8 @@ describe("applyPrismKoishiPlugin", () => {
   it("recognizes canonical platform entry sessions for Mahjong and roster grouping", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
-    client.listActiveSessions = async () => ({ sessions: [{ id: "entry-1", playerId: "player-1", label: "entry", identities: [{ provider: "qq", subject: "2034994588" }] }] });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door",
+    client.listActiveSessions = async () => ({ sessions: [{ id: "entry-1", playerId: "player-1", label: "entry", identities: [{ provider: "onebot", subject: "2034994588" }] }] });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { autoRegister: true, defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime", currencyName: "猫粮", loginSessionLabel: "音乐游戏",
       mahjongTableConfigs: [{ displayName: "麻将", aliases: ["a"], pricingConfigIds: ["mahjong"] }], client: client as any,
     });
@@ -1108,7 +1082,6 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1136,17 +1109,16 @@ describe("applyPrismKoishiPlugin", () => {
   it("synchronizes mahjong state from backend active sessions", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+    const config: PrismKoishiPluginConfig = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
       mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 1, client: client as any,
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
     await registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588" } }, "a");
-    client.listActiveSessions = async () => ({ sessions: [{ id: "music-session", playerId: "player-1", label: "音游区间", identities: [{ provider: "qq", subject: "2034994588" }] }] });
+    client.listActiveSessions = async () => ({ sessions: [{ id: "music-session", playerId: "player-1", label: "音游区间", identities: [{ provider: "onebot", subject: "2034994588" }] }] });
     await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588" } }, "a")).resolves.toContain("大洋化学已满，麻将计费已开始");
 
     const recovered = new Map<string, RegisteredCommand>();
-    client.listActiveSessions = async () => ({ sessions: [{ id: "mahjong-session", playerId: "player-1", label: "大洋化学", identities: [{ provider: "qq", subject: "2034994588" }] }] });
+    client.listActiveSessions = async () => ({ sessions: [{ id: "mahjong-session", playerId: "player-1", label: "大洋化学", identities: [{ provider: "onebot", subject: "2034994588" }] }] });
     applyPrismKoishiPlugin(createMockKoishiContext(recovered), config);
     await expect(recovered.get("下桌")?.action({ session: { userId: "2034994588" } })).resolves.toContain("已离开 大洋化学");
     expect(client.calls).toContainEqual(["stopSessionByIdentity", expect.anything(), "mahjong-session"]);
@@ -1155,8 +1127,7 @@ describe("applyPrismKoishiPlugin", () => {
   it("evicts orphan waiting seats when player is externally checked out", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+    const config: PrismKoishiPluginConfig = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
       mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
@@ -1166,7 +1137,7 @@ describe("applyPrismKoishiPlugin", () => {
     // so we match that in the session list.
     client.listActiveSessions = async () => ({
       sessions: [
-        { id: "entry-session", playerId: "player-1", label: "音游区间", identities: [{ provider: "qq", subject: "77" }] },
+        { id: "entry-session", playerId: "player-1", label: "音游区间", identities: [{ provider: "onebot", subject: "77" }] },
       ]
     });
     await registered.get("上桌 [tableId]")?.action({ session: { userId: "77" } }, "a");
@@ -1186,8 +1157,7 @@ describe("applyPrismKoishiPlugin", () => {
   it("displays remaining player count on leave mid-game", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+    const config: PrismKoishiPluginConfig = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
       mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
@@ -1195,8 +1165,8 @@ describe("applyPrismKoishiPlugin", () => {
     // Mock active sessions with 2 players
     client.listActiveSessions = async () => ({
       sessions: [
-        { id: "session-1", playerId: "player-1", label: "大洋化学", identities: [{ provider: "qq", subject: "1" }] },
-        { id: "session-2", playerId: "player-2", label: "大洋化学", identities: [{ provider: "qq", subject: "2" }] },
+        { id: "session-1", playerId: "player-1", label: "大洋化学", identities: [{ provider: "onebot", subject: "1" }] },
+        { id: "session-2", playerId: "player-2", label: "大洋化学", identities: [{ provider: "onebot", subject: "2" }] },
       ]
     });
 
@@ -1207,8 +1177,7 @@ describe("applyPrismKoishiPlugin", () => {
   it("clears mahjong table state when a seated player uses /logout directly", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+    const config: PrismKoishiPluginConfig = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
       mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
@@ -1216,7 +1185,7 @@ describe("applyPrismKoishiPlugin", () => {
     // Player is seated at the table (active session)
     client.listActiveSessions = async () => ({
       sessions: [
-        { id: "session-99", playerId: "player-99", label: "大洋化学", identities: [{ provider: "qq", subject: "99" }] },
+        { id: "session-99", playerId: "player-99", label: "大洋化学", identities: [{ provider: "onebot", subject: "99" }] },
       ]
     });
 
@@ -1250,7 +1219,6 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1268,7 +1236,6 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1285,7 +1252,6 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       client: client as any,
     };
@@ -1312,7 +1278,7 @@ describe("applyPrismKoishiPlugin", () => {
     const startSessionCall = client.calls.find((c) => c[0] === "startSessionByIdentity");
     expect(startSessionCall).toBeDefined();
     expect(startSessionCall[1]).toEqual({
-      provider: "qq",
+      provider: "onebot",
       subject: "qq-user-123",
       autoRegister: true,
       displayName: "Dynamic QQ Nickname",
@@ -1324,7 +1290,6 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       loginPricingConfigIds: ["pricing-music-standard"],
       loginSessionLabel: "自定义标签",
@@ -1350,7 +1315,6 @@ describe("applyPrismKoishiPlugin", () => {
       throw new PrismBotClientError("Player already has an active session with label '音游区间'.", "DUPLICATE_SESSION_LABEL", 409, {});
     };
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       loginSessionLabel: "音游区间",
       defaultDoorDeviceId: "front-door",
@@ -1393,7 +1357,6 @@ describe("applyPrismKoishiPlugin", () => {
       wallet: { balanceBefore: 9791, balanceAfter: 9791 },
     });
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1443,7 +1406,6 @@ describe("applyPrismKoishiPlugin", () => {
       wallet: { balanceBefore: 81, balanceAfter: 2 },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1490,7 +1452,6 @@ describe("applyPrismKoishiPlugin", () => {
       wallet: { balanceBefore: 10, balanceAfter: 0 },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1547,7 +1508,6 @@ describe("applyPrismKoishiPlugin", () => {
       wallet: { balanceBefore: 100, balanceAfter: 93 },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1600,7 +1560,6 @@ describe("applyPrismKoishiPlugin", () => {
       wallet: { balanceBefore: 0, balanceAfter: 0 },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1699,7 +1658,6 @@ describe("applyPrismKoishiPlugin", () => {
       wallet: { balanceBefore: 252, balanceAfter: 185 },
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1760,7 +1718,6 @@ describe("applyPrismKoishiPlugin", () => {
       globalCapWindows: [],
     });
     const config: PrismKoishiPluginConfig = {
-      provider: "qq",
       autoRegister: true,
       defaultDoorDeviceId: "front-door",
       defaultScanProvider: "aime",
@@ -1791,18 +1748,17 @@ describe("applyPrismKoishiPlugin", () => {
       id: `player-${input.subject}`,
       displayName: `Player ${input.subject}`,
     });
-    const config: PrismKoishiPluginConfig = {
-      provider: "qq", autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
+    const config: PrismKoishiPluginConfig = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
       mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
     };
     applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
 
     let currentSessions = [
-      { id: "session-1", playerId: "player-1", label: "大洋化学", identities: [{ provider: "qq", subject: "1" }] },
-      { id: "session-2", playerId: "player-2", label: "大洋化学", identities: [{ provider: "qq", subject: "2" }] },
-      { id: "session-3", playerId: "player-3", label: "大洋化学", identities: [{ provider: "qq", subject: "3" }] },
-      { id: "session-4", playerId: "player-4", label: "大洋化学", identities: [{ provider: "qq", subject: "4" }] },
-      { id: "entry-5", playerId: "player-5", label: "入场区间", identities: [{ provider: "qq", subject: "5" }] },
+      { id: "session-1", playerId: "player-1", label: "大洋化学", identities: [{ provider: "onebot", subject: "1" }] },
+      { id: "session-2", playerId: "player-2", label: "大洋化学", identities: [{ provider: "onebot", subject: "2" }] },
+      { id: "session-3", playerId: "player-3", label: "大洋化学", identities: [{ provider: "onebot", subject: "3" }] },
+      { id: "session-4", playerId: "player-4", label: "大洋化学", identities: [{ provider: "onebot", subject: "4" }] },
+      { id: "entry-5", playerId: "player-5", label: "入场区间", identities: [{ provider: "onebot", subject: "5" }] },
     ];
     client.listActiveSessions = async () => ({ sessions: currentSessions });
 
@@ -1826,28 +1782,29 @@ describe("applyPrismKoishiPlugin", () => {
 });
 
 
-it("binds the actual QQ sender while channel filtering belongs to the Bot framework", async () => {
+it("binds each actual adapter sender without configuration overrides or channel restrictions", async () => {
   const registered = new Map<string, RegisteredCommand>();
   applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-    provider: "qq", shopCode: "shop-a", baseUrl: "https://prism.test", integrationToken: "test-token",
-    client: createDefaultClient() as any,
+    shopCode: "shop-a",baseUrl: "https://prism.test",integrationToken: "test-token",
+    autoRegister:true,defaultDoorDeviceId:"front-door",defaultScanProvider:"aime",currencyName:"猫粮",
   });
-  const command = registered.get("prism.bind <code:string>")!;
-  const originalFetch = globalThis.fetch;
-  const calls: { url: string; body: unknown }[] = [];
-  globalThis.fetch = (async (url, init) => {
-    calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
-    return Response.json({ data: { verified: true } });
+  const calls: any[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url,init) => {
+    calls.push({ url:String(url),body:JSON.parse(String(init?.body)) });
+    return Response.json({data:{playerId:"p"}});
   }) as typeof fetch;
   try {
-    expect(await command.action({ session: { platform: "discord", userId: "123456" } }, "ABCD2345")).toContain("QQ");
-    expect(await command.action({ session: { platform: "onebot", userId: "not-a-qq" } }, "ABCD2345")).toContain("无法获取");
-    expect(calls).toHaveLength(0);
-    for (const platform of ["qq", "onebot"]) for (const isDirect of [false, true]) {
-      expect(await command.action({ session: { platform, userId: "123456", isDirect } }, "ABCD2345")).toContain("绑定成功");
+    const command = registered.get("prism.bind <code:string>")!;
+    expect(await command.action({session:{platform:undefined,userId:"123456"}},"ABCD2345")).toContain("无法获取");
+    for (const platform of ["onebot","telegram","discord"]) for (const isDirect of [false,true]) {
+      expect(await command.action({session:{platform,userId:"114514",senderId:"forged",isDirect}},"ABCD2345")).toContain("绑定成功");
     }
-    expect(calls).toEqual(Array(4).fill({ url: "https://prism.test/api/v1/shops/shop-a/integration/qq-binding/confirm", body: { code: "ABCD2345", qq: "123456" } }));
-  } finally { globalThis.fetch = originalFetch; }
+    expect(calls).toEqual(["onebot","telegram","discord"].flatMap(provider=>Array(2).fill({
+      url:"https://prism.test/api/v1/shops/shop-a/integration/platform-binding/confirm",
+      body:{code:"ABCD2345",provider,subject:"114514"},
+    })));
+  } finally { globalThis.fetch=original; }
 });
 
 it("uses shop-scoped v1 roster and includes persistent Mahjong waiting seats", async () => {
@@ -1862,7 +1819,7 @@ it("uses shop-scoped v1 roster and includes persistent Mahjong waiting seats", a
       return {data:{sessions,mahjongTables:[{id:"table",name:"麻将 A",capacity:4,players:[{id:"p",name:"等待玩家"}]}]}};
     } },
   };
-  applyPrismKoishiPlugin(context, {provider:"qq",shopCode:"shop-a",baseUrl:"https://prism.test",integrationToken:"test-token"});
+  applyPrismKoishiPlugin(context, {shopCode:"shop-a",baseUrl:"https://prism.test",integrationToken:"test-token"});
   const result = await registered.get("list")!.action({session:{userId:"123456"}});
   expect(calls).toEqual(["https://prism.test/api/v1/shops/shop-a/integration/sessions/active"]);
   expect(result).toContain("麻将 A（1/4）");
@@ -1876,4 +1833,37 @@ it("uses shop-scoped v1 roster and includes persistent Mahjong waiting seats", a
   const mixed = await registered.get("list")!.action({session:{userId:"123456"}});
   expect(mixed).toContain("[总计 2 人]");
   expect(mixed.match(/等待玩家/g)).toHaveLength(1);
+});
+
+it("uses the message adapter for every billing identity and scopes staff privileges across platforms",async()=>{
+  const registered=new Map<string,RegisteredCommand>();
+  const client=createDefaultClient();
+  applyPrismKoishiPlugin(createMockKoishiContext(registered),{
+    autoRegister:true,defaultDoorDeviceId:"front-door",defaultScanProvider:"aime",currencyName:"猫粮",
+    enableStaffCommands:true,staffUserIds:["onebot:114514"],client,
+  });
+  for(const platform of ["onebot","telegram"]){
+    await registered.get("register")!.action({session:{platform,userId:"114514",senderName:platform}});
+    await registered.get("wallet [target:user]")!.action({session:{platform,userId:"114514"}});
+    expect(client.calls).toContainEqual(["resolveOrRegisterIdentity",{provider:platform,subject:"114514",autoRegister:true,displayName:platform}]);
+  }
+  const telegram={session:{platform:"telegram",userId:"114514"}};
+  expect(await registered.get("login [target:user]")!.action(telegram,"telegram:someone")).toBe("权限不足");
+  const onebot={session:{platform:"onebot",userId:"114514"}};
+  expect(await registered.get("login [target:user]")!.action(onebot,"telegram:someone")).toBe("请在目标平台使用该命令");
+  expect(await registered.get("login [target:user]")!.action(onebot,"onebot:someone")).toContain("入场成功");
+});
+
+it("sends settlement notices only through the sender adapter",async()=>{
+  const registered=new Map<string,RegisteredCommand>();
+  const client=createDefaultClient();
+  const calls:any[]=[];
+  applyPrismKoishiPlugin(createMockKoishiContext(registered),{
+    autoRegister:true,defaultDoorDeviceId:"front-door",defaultScanProvider:"aime",currencyName:"猫粮",
+    logoutNotifyUserIds:["onebot:114514","telegram:114514"],client,
+  });
+  for(const platform of ["onebot","telegram"]) await registered.get("logout [target:user]")!.action({session:{
+    platform,userId:"player",bot:{broadcast:async(ids:string[])=>{calls.push([platform,ids]);}},
+  }});
+  expect(calls).toEqual([["onebot",["private:114514"]],["telegram",["private:114514"]]]);
 });

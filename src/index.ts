@@ -5,7 +5,6 @@ export const name = "prism";
 export const version = packageMetadata.version;
 
 export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
-  provider: Schema.string().required().description("平台提供商 (如 qq)"),
   autoRegister: Schema.boolean().default(true).description("是否自动注册"),
   shopCode: Schema.string().description("统一平台店铺编号（单店兼容模式留空）"),
   baseUrl: Schema.string().description("PRiSM 后端 API Base URL"),
@@ -16,9 +15,9 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   loginPricingConfigIds: Schema.array(Schema.string()).default([]).description("默认入场绑定的计费策略ID"),
   loginSessionLabel: Schema.string().default("音游区间").description("默认入场场次标签 (防重复入场)"),
   enableStaffCommands: Schema.boolean().default(false).description("是否启用管理员指令"),
-  staffUserIds: Schema.array(Schema.string()).default([]).description("允许执行管理员指令的平台用户ID列表"),
+  staffUserIds: Schema.array(Schema.string()).default([]).description("允许执行管理员指令的平台身份列表（如 onebot:123456、telegram:123456）"),
   powerCommandsAdminOnly: Schema.boolean().default(false).description("关机是否仅允许管理员使用；开机始终仅已入场玩家可用"),
-  logoutNotifyUserIds: Schema.array(Schema.string()).default([]).description("结账账单私聊通知的平台用户ID列表"),
+  logoutNotifyUserIds: Schema.array(Schema.string()).default([]).description("结账账单私聊通知的平台身份列表（如 onebot:123456）"),
   powerOffInterval: Schema.number().default(0).description("无人自动关机等待秒数 (0为禁用)"),
   mahjongTableConfigs: Schema.array(Schema.object({
     displayName: Schema.string().required().description("桌位显示名称和 session 标签"),
@@ -55,7 +54,6 @@ export type MahjongTableConfig = {
 export type MahjongTableConfigInput = Omit<MahjongTableConfig, "tableId">;
 
 export type PrismKoishiPluginConfig = {
-  provider: string;
   autoRegister: boolean;
   loginPricingConfigIds?: string[];
   loginSessionLabel?: string;
@@ -71,11 +69,11 @@ export type PrismKoishiPluginConfig = {
   powerOffInterval?: number;
   /**
    * Used by /list to resolve player display names from the chat platform.
-   * For Koishi, this should map a QQ subject string to a nickname (e.g. the
+   * For Koishi, this maps an adapter subject and provider to a nickname (e.g. the
    * member list of the current group). If not provided, the plugin will fall
    * back to `playerDisplayName` from the backend.
    */
-  resolveDisplayName?: (subject: string) => Promise<string | null | undefined> | string | null | undefined;
+  resolveDisplayName?: (subject: string, provider: string) => Promise<string | null | undefined> | string | null | undefined;
   /** Get a stable current ISO timestamp; mainly for tests. */
   now?: () => Date;
 
@@ -115,6 +113,7 @@ export type KoishiActionContext = {
     senderName?: string;
     username?: string;
     bot?: {
+      platform?: string;
       getUser?(id: string): Promise<{ name?: string }>;
       broadcast?(userIds: string[], content: string): Promise<void>;
     };
@@ -200,13 +199,12 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     }
   };
 
-  ctx.command("prism.bind <code:string>", "绑定网页登录账号到本店 QQ 身份").action(wrap(async (context, code) => {
-    if (!["qq", "onebot"].includes(context.session.platform ?? "")) return "请使用 QQ 身份发送验证码";
-    if (!/^[1-9]\d{4,19}$/.test(context.session.userId ?? "")) return "无法获取发送人的 QQ 号";
+  ctx.command("prism.bind <code:string>", "绑定网页登录账号到当前平台身份").action(wrap(async (context, code) => {
+    const sender = await service.sender(context);
     if (!config.shopCode || !config.baseUrl || !config.integrationToken) return "请店家配置统一平台店铺编号与 Bot 凭据";
-    const response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/v1/shops/${encodeURIComponent(config.shopCode)}/integration/qq-binding/confirm`, {
+    const response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/v1/shops/${encodeURIComponent(config.shopCode)}/integration/platform-binding/confirm`, {
       method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.integrationToken}` },
-      body: JSON.stringify({ code, qq: context.session.userId }),
+      body: JSON.stringify({ code, provider: sender.provider, subject: sender.id }),
     });
     const body = await response.json() as { error?: { message: string } };
     return response.ok ? "绑定成功，请返回网页继续操作" : body.error?.message ?? "绑定失败，请重新生成验证码";
@@ -601,7 +599,9 @@ class PrismKoishiService {
   }
 
   async sender(context: KoishiActionContext): Promise<Sender> {
-    const id = context.session?.senderId || context.session?.userId || "";
+    const id = cleanText(context.session?.userId);
+    const provider = cleanText(context.session?.platform || context.session?.bot?.platform).toLowerCase();
+    if (!id || !/^[a-z][a-z0-9_-]{0,63}$/.test(provider)) throw new PrismBotClientError("无法获取发送人的平台身份","INVALID_PLATFORM_IDENTITY",400,null);
     let name = context.session?.username || context.session?.senderName || id;
     try {
       if (context.session?.bot?.getUser) {
@@ -611,7 +611,7 @@ class PrismKoishiService {
         }
       }
     } catch { }
-    return { id, name };
+    return { id, name, provider };
   }
 
   async register(sender: Sender): Promise<string> {
@@ -622,7 +622,7 @@ class PrismKoishiService {
   async loginForTarget(actor: Sender, targetSubject?: string, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
     return this.withTarget(actor, targetSubject, async (sender, isTargeted) => {
       await this.client.startSessionByIdentity(this.identity(sender), this.loginSessionBody());
-      return isTargeted ? `✅ 已为用户 ${formatPlayerReference(sender, this.config.provider)} 入场成功` : "✅ 入场成功";
+      return isTargeted ? `✅ 已为用户 ${formatPlayerReference(sender)} 入场成功` : "✅ 入场成功";
     }, bot);
   }
 
@@ -652,7 +652,7 @@ class PrismKoishiService {
         amount * direction,
         isAddition ? "Koishi 管理员增加余额" : "Koishi 管理员扣除余额",
       );
-      return `✅ 已为用户 ${formatPlayerReference(sender, this.config.provider)}${isAddition ? "增加" : "扣除"} ${formatNumber(amount)} ${this.config.currencyName}`;
+      return `✅ 已为用户 ${formatPlayerReference(sender)}${isAddition ? "增加" : "扣除"} ${formatNumber(amount)} ${this.config.currencyName}`;
     }, bot);
   }
 
@@ -856,10 +856,13 @@ class PrismKoishiService {
     };
     const receipt = await this.formatCheckoutPreview(synthetic, sender, title, false);
     const recipients = [...new Set([...(this.config.staffUserIds ?? []), ...(this.config.logoutNotifyUserIds ?? [])])];
-    if (recipients.length > 0 && bot?.broadcast) {
-      const channelIds = recipients.map((id) => (id.includes(":") ? id : `private:${id}`));
-      await bot.broadcast(channelIds, receipt);
-    }
+    const channelIds = recipients.flatMap(identity => {
+      if (identity.startsWith(`${sender.provider}:`)) return [`private:${identity.slice(sender.provider.length+1)}`];
+      if (sender.provider === "onebot" && (!identity.includes(":") || identity.startsWith("private:")))
+        return [identity.startsWith("private:") ? identity : `private:${identity}`];
+      return [];
+    });
+    if (channelIds.length > 0 && bot?.broadcast) await bot.broadcast(channelIds,receipt);
     return receipt;
   }
 
@@ -1015,7 +1018,7 @@ class PrismKoishiService {
       ]),
     );
     const players = groupSessionsByPlayer(sessions);
-    const groups = await this.buildPlayerGroups(players, tableByLabel);
+    const groups = await this.buildPlayerGroups(players, tableByLabel, sender.provider);
     this.mergeWaitingSeats(groups);
     const tables = result.mahjongTables as {id:string;name:string;capacity:number;players:{id:string;name:string}[]}[] | undefined;
     if (!tables) return formatPlayerGroups(groups, this.config.mahjongTableSize ?? 4);
@@ -1059,7 +1062,7 @@ ${table.players.map(player => player.name).join("、")}`),
     const states = (statesResult?.deviceStates ?? []) as DeviceStateItem[];
     const anyOn = states.some((d) => normalizeDeviceState(d.state) === "on");
     if (!anyOn) return;
-    const dummySender: Sender = { id: "system", name: "system" };
+    const dummySender: Sender = { id: "system", name: "system", provider: "system" };
     await this.power(dummySender, "all", "off", true);
   }
 
@@ -1068,7 +1071,7 @@ ${table.players.map(player => player.name).join("、")}`),
   private async power(sender: Sender, deviceRef: string, state: string, systemOverride = false): Promise<string> {
     const operation = state === "on" ? "启动" : "关闭";
     const staffOverride = systemOverride || (state === "off" && this.config.powerCommandsAdminOnly === true);
-    if (!systemOverride && staffOverride && !(this.config.staffUserIds ?? []).includes(sender.id)) {
+    if (!systemOverride && staffOverride && !matchesPlatformIdentity(this.config.staffUserIds ?? [],sender)) {
       return `${operation}失败，权限不足`;
     }
     try {
@@ -1098,22 +1101,22 @@ ${table.players.map(player => player.name).join("、")}`),
     return null;
   }
 
-  private async resolvePlatformName(subject: string): Promise<string | null> {
+  private async resolvePlatformName(subject: string, provider: string): Promise<string | null> {
     if (!this.config.resolveDisplayName) return null;
     try {
-      return (await this.config.resolveDisplayName(subject)) ?? null;
+      return (await this.config.resolveDisplayName(subject, provider)) ?? null;
     } catch {
       return null;
     }
   }
 
-  private async displayNameForPlayer(player: ActivePlayer): Promise<string> {
+  private async displayNameForPlayer(player: ActivePlayer, provider: string): Promise<string> {
     let identitySubject: string | undefined;
     for (const session of player.sessions) {
-      const subject = findSubjectForSession(session, this.config.provider);
+      const subject = findSubjectForSession(session, provider);
       if (!subject) continue;
       identitySubject ??= subject;
-      const platformName = await this.resolvePlatformName(subject);
+      const platformName = await this.resolvePlatformName(subject, provider);
       if (platformName) return platformName;
     }
     return player.sessions.find((session) => session.playerDisplayName)?.playerDisplayName
@@ -1126,13 +1129,14 @@ ${table.players.map(player => player.name).join("、")}`),
   private async buildPlayerGroups(
     players: Map<string, ActivePlayer>,
     tableByLabel: Map<string, MahjongTableConfig>,
+    provider: string,
   ): Promise<PlayerGroups> {
     const groups: PlayerGroups = { groups: [] };
     const groupByLabel = new Map<string, PlayerGroups["groups"][number]>();
     const musicLabel = this.config.loginSessionLabel?.trim() || "音游区间";
 
     for (const player of players.values()) {
-      player.displayName = await this.displayNameForPlayer(player);
+      player.displayName = await this.displayNameForPlayer(player, provider);
       const nonMusic = player.sessions.filter((session) => Boolean(session.label) && session.label !== "entry" && session.label !== musicLabel);
       const source = nonMusic.length > 0 ? nonMusic : player.sessions;
       const selected = source.reduce((latest, session) =>
@@ -1174,11 +1178,11 @@ ${table.players.map(player => player.name).join("、")}`),
 
   private async resolvePlayerDisplay(sender: Sender | null, playerId?: string): Promise<string> {
     if (!sender) return playerId || "未知玩家";
-    const platformName = await this.resolvePlatformName(sender.id);
+    const platformName = await this.resolvePlatformName(sender.id, sender.provider);
     const name = platformName
       || (sender.name && sender.name !== sender.id ? sender.name : "")
       || "未知昵称";
-    return `玩家：${name}（${this.config.provider.toUpperCase()}：${sender.id}）`;
+    return `玩家：${name}（${sender.provider}:${sender.id}）`;
   }
 
 
@@ -1249,23 +1253,28 @@ ${table.players.map(player => player.name).join("、")}`),
 
   private identity(sender: Sender): IdentityInput {
     return {
-      provider: this.config.provider,
+      provider: sender.provider,
       subject: sender.id,
       autoRegister: this.config.autoRegister,
-      displayName: sender.name || `${this.config.provider.toUpperCase()} ${sender.id}`,
+      displayName: sender.name || `${sender.provider} ${sender.id}`,
     };
   }
 
   private async targetSender(actor: Sender, targetSubject?: string, bot?: KoishiActionContext["session"]["bot"]): Promise<Sender | string> {
-    const subject = normalizeTargetSubject(targetSubject);
-    if (!subject) return actor;
+    const raw = cleanText(targetSubject);
+    if (!raw) return actor;
+    const separator = raw.indexOf(":");
+    const provider = separator > 0 ? raw.slice(0,separator).toLowerCase() : actor.provider;
+    const subject = separator > 0 ? raw.slice(separator+1) : raw;
+    if (provider !== actor.provider) return "请在目标平台使用该命令";
+    if (!subject) return "无法获取目标平台身份";
     const denied = this.targetStaffDenied(actor);
     if (denied) return denied;
     try {
       const user = await bot?.getUser?.(subject);
-      return { id: subject, name: user?.name || subject };
+      return { id: subject, name: user?.name || subject, provider };
     } catch {
-      return { id: subject, name: subject };
+      return { id: subject, name: subject, provider };
     }
   }
 
@@ -1284,14 +1293,14 @@ ${table.players.map(player => player.name).join("、")}`),
   private staffDenied(sender: Sender): string | null {
     if (!this.config.enableStaffCommands) return "员工命令未启用";
     const allowed = this.config.staffUserIds ?? [];
-    if (allowed.length > 0 && !allowed.includes(sender.id)) return "权限不足";
+    if (allowed.length > 0 && !matchesPlatformIdentity(allowed,sender)) return "权限不足";
     return null;
   }
 
   private targetStaffDenied(sender: Sender): string | null {
     if (!this.config.enableStaffCommands) return "员工命令未启用";
     const allowed = this.config.staffUserIds ?? [];
-    if (!allowed.includes(sender.id)) return "权限不足";
+    if (!matchesPlatformIdentity(allowed,sender)) return "权限不足";
     return null;
   }
 
@@ -1448,9 +1457,10 @@ ${table.players.map(player => player.name).join("、")}`),
 
 /* ------------------------------ utilities --------------------------------- */
 
-export type Sender = { id: string; name: string };
+export type Sender = { id: string; name: string; provider: string };
 
 export function humanReadableBotError(error: PrismBotClientError): string {
+  if (error.code === "INVALID_PLATFORM_IDENTITY") return error.message;
   if (error.code === "DUPLICATE_SESSION_LABEL") {
     return "❌ 您已经处于入场状态，请勿重复发送入场命令。";
   }
@@ -1629,15 +1639,15 @@ function formatReleaseVersion(value: unknown): string {
   return !revision || revision === "unknown" ? release : `${release} (${revision})`;
 }
 
-function normalizeTargetSubject(value: unknown): string {
-  const subject = cleanText(value);
-  const separator = subject.indexOf(":");
-  return separator > 0 ? subject.slice(separator + 1) : subject;
+function matchesPlatformIdentity(identities: string[], sender: Sender): boolean {
+  return identities.includes(`${sender.provider}:${sender.id}`)
+    // Legacy unqualified staff lists belong to the original adapter only.
+    || (sender.provider === "onebot" && identities.includes(sender.id));
 }
 
-function formatPlayerReference(sender: Sender, provider = "qq"): string {
+function formatPlayerReference(sender: Sender): string {
   const name = sender.name && sender.name !== sender.id ? sender.name : "未知昵称";
-  return `${name}（${provider.toUpperCase()}：${sender.id}）`;
+  return `${name}（${sender.provider}:${sender.id}）`;
 }
 
 function adjustmentKey(adjustment: UncheckedRecord): string {
@@ -1822,9 +1832,8 @@ function formatHistory(sessions: UncheckedRecord[], currency: string): string {
 function findSubjectForSession(session: ActiveSessionListItem, provider: string): string | null {
   const identities = session.identities ?? [];
   if (identities.length === 0) return null;
-  const qq = identities.find((id) => id.provider === provider);
-  if (qq) return qq.subject;
-  return identities[0].subject ?? null;
+  const identity = provider ? identities.find((id) => id.provider === provider) : identities[0];
+  return identity?.subject ?? null;
 }
 
 export default {
