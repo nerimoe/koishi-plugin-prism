@@ -1867,3 +1867,20 @@ it("sends settlement notices only through the sender adapter",async()=>{
   }});
   expect(calls).toEqual([["onebot",["private:114514"]],["telegram",["private:114514"]]]);
 });
+
+it("renders API-carried shop offsets even when the Bot host uses another zone", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  const client = createDefaultClient();
+  const preview = await client.previewCheckoutByIdentity({});
+  preview.sessionPreviews[0]!.startedAt = "2026-10-03T10:08:00+08:00";
+  preview.sessionPreviews[0]!.endedAt = "2026-10-03T11:54:00+08:00";
+  preview.settlementPreview.previewedAt = "2026-10-03T11:54:00+08:00";
+  client.previewCheckoutByIdentity = async () => preview;
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+    autoRegister: true, defaultDoorDeviceId: "door", defaultScanProvider: "aime", currencyName: "元", client,
+  });
+  const result = await registered.get("billing [target:user]")!.action({ session: { userId: "123" } });
+  expect(result).toContain("游玩时间：10:08–11:54（UTC+08:00）");
+  expect(result).toContain("游玩时段：10:08-11:54");
+  expect(result).toContain("游玩时长：1小时46分钟");
+});

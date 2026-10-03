@@ -1,3 +1,4 @@
+import { apiOffsetLabel, formatDateTime, formatHM, formatMD, parseDateTime } from "./display-time.js";
 import { h, Schema } from "koishi";
 import packageMetadata from "../package.json";
 
@@ -119,8 +120,6 @@ export type KoishiActionContext = {
     };
   };
 };
-
-const LOCAL_TZ_OFFSET_MINUTES = 8 * 60;
 
 const USAGE: Record<string, string> = {
   mahjong_join: "/上桌 <桌号>",
@@ -1338,12 +1337,13 @@ ${table.players.map(player => player.name).join("、")}`),
       return lines.join("\n");
     }
 
-    const validStarts = sessionPreviews.map((s) => parseDateTime(s?.startedAt)).filter(Boolean) as Date[];
-    const validEnds = sessionPreviews.map((s) => sessionDisplayEnd(s, previewedAt)).filter(Boolean) as Date[];
+    const validStarts = sessionPreviews.map(s => s.startedAt).filter(value => parseDateTime(value)) as string[];
+    const validEnds = sessionPreviews.map(s => s.endedAt || (s.status === "active" ? preview.previewedAt : null)).filter(value => parseDateTime(value)) as string[];
     if (validStarts.length > 0) {
-      const overallStart = minDate(validStarts);
-      const overallEnd = validEnds.length > 0 ? maxDate(validEnds) : now(this.config);
-      lines.push(`⏰ 游玩时间：${formatHM(overallStart)}–${formatHM(overallEnd)}`);
+      const overallStart = validStarts.reduce((a, b) => Date.parse(a) < Date.parse(b) ? a : b);
+      const overallEnd = validEnds.length > 0 ? validEnds.reduce((a, b) => Date.parse(a) > Date.parse(b) ? a : b) : now(this.config).toISOString();
+      const offsets = [...new Set([apiOffsetLabel(overallStart), apiOffsetLabel(overallEnd)])].join(" / ");
+      lines.push(`⏰ 游玩时间：${formatHM(overallStart)}–${formatHM(overallEnd)}（${offsets}）`);
     }
 
     for (const sPrev of sessionPreviews) {
@@ -1356,10 +1356,10 @@ ${table.players.map(player => player.name).join("、")}`),
       lines.push(label);
       if (startDt && endDt) {
         const minutes = Math.floor((endDt.getTime() - startDt.getTime()) / 60_000);
-        lines.push(`游玩时段：${formatHM(startDt)}-${formatHM(endDt)}`);
+        lines.push(`游玩时段：${formatHM(sPrev.startedAt)}-${formatHM(sPrev.endedAt || preview.previewedAt || endDt.toISOString())}`);
         lines.push(`游玩时长：${formatDurationValue(minutes)}｜计价：${formatNumber(sTotal)}${currency}`);
       } else if (startDt) {
-        lines.push(`入场：${formatHM(startDt)}  （${status === "active" ? "计费中" : "已关闭"}）`);
+        lines.push(`入场：${formatHM(sPrev.startedAt)}  （${status === "active" ? "计费中" : "已关闭"}）`);
       }
       const sessionAdjustments = (sPrev?.adjustments ?? []) as UncheckedRecord[];
       for (const adj of sessionAdjustments) {
@@ -1379,7 +1379,7 @@ ${table.players.map(player => player.name).join("、")}`),
       for (const window of cappedWindows) {
         const label = window.ruleLabel || "封顶时段";
         const startedAt = parseDateTime(window.windowStartedAt);
-        const datedLabel = startedAt ? `${formatMD(startedAt)} ${label}` : label;
+        const datedLabel = startedAt ? `${formatMD(window.windowStartedAt)} ${label}` : label;
         const currentAmount = toNumber(window.currentAmount);
         const amountApplied = toNumber(window.amountApplied);
         const priceCap = toNumber(window.priceCap);
@@ -1699,62 +1699,6 @@ function formatNumber(value: any): string {
     return Number.isInteger(num) ? String(num) : String(num);
   }
   return String(value);
-}
-
-function parseDateTime(value: any): Date | null {
-  if (!value) return null;
-  if (value instanceof Date) {
-    return ensureLocal(value);
-  }
-  const text = String(value).trim();
-  if (!text) return null;
-  let normalized = text;
-  if (normalized.endsWith("Z")) normalized = `${normalized.slice(0, -1)}+00:00`;
-  const dt = new Date(normalized);
-  if (!Number.isNaN(dt.getTime())) return ensureLocal(dt);
-  return null;
-}
-
-function ensureLocal(dt: Date): Date {
-  const offsetMs = LOCAL_TZ_OFFSET_MINUTES * 60_000;
-  const local = new Date(dt.getTime() + offsetMs);
-  void local;
-  return dt;
-}
-
-function formatHM(dt: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
-}
-
-function formatMD(dt: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
-
-function formatDateTime(value: any): string {
-  const dt = parseDateTime(value);
-  if (!dt) return "永不过期";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${dt.getFullYear()}/${pad(dt.getMonth() + 1)}/${pad(dt.getDate())} ${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
-}
-
-function formatTimeRange(start: any, end: any): string {
-  const startDt = parseDateTime(start);
-  const endDt = parseDateTime(end);
-  if (!startDt || !endDt) return `${formatDateTime(start)} - ${formatDateTime(end)}`;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const startTime = `${pad(startDt.getHours())}:${pad(startDt.getMinutes())}:${pad(startDt.getSeconds())}`;
-  const endTime = `${pad(endDt.getHours())}:${pad(endDt.getMinutes())}:${pad(endDt.getSeconds())}`;
-  if (startDt.toDateString() === endDt.toDateString()) return `${startTime} - ${endTime}`;
-  return `${startDt.getMonth() + 1}/${startDt.getDate()} ${startTime} - ${endDt.getMonth() + 1}/${endDt.getDate()} ${endTime}`;
-}
-
-function formatDurationMinutes(start: any, end: any): string {
-  const startDt = parseDateTime(start);
-  const endDt = parseDateTime(end);
-  if (!startDt || !endDt) return "0分钟";
-  return formatDurationValue(Math.floor((endDt.getTime() - startDt.getTime()) / 60_000));
 }
 
 function formatDurationValue(minutes: any): string {
