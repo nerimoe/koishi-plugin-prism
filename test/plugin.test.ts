@@ -621,7 +621,7 @@ describe("applyPrismKoishiPlugin", () => {
     }, 30, "管理员调价"]);
     expect(client.calls).toContainEqual(["startSessionByIdentity", {
       provider: "onebot", subject: "262661418", autoRegister: true, displayName: "262661418",
-    }, undefined]);
+    }, { entry: true }]);
   });
 
   it("denies targeted administrator shortcuts when the staff whitelist is empty", async () => {
@@ -1835,6 +1835,7 @@ describe("applyPrismKoishiPlugin", () => {
     expect(client.calls).toContainEqual(["startSessionByIdentity", expect.anything(), {
       pricingConfigIds: ["pricing-mahjong-a"],
       label: "大洋化学",
+      entry: false,
     }]);
   });
 });
