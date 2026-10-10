@@ -1927,7 +1927,7 @@ it("sends real Koishi HTTP envelopes for entry, Mahjong seat and leave", async (
   expect(starts.map(call => call.body.entry)).toEqual([true, false]);
   expect(starts.map(call => call.body.label)).toEqual(["音游区间", "麻将 A 桌"]);
   for (const call of calls) {
-    expect(call.path).toStartWith("/api/v1/shops/audit/integration/");
+    expect(call.path.startsWith("/api/v1/shops/audit/integration/")).toBe(true);
     expect(call.token).toBe("Bearer fake-integration-token");
     if (call.method === "POST") expect(call.body.identity).toMatchObject({
       provider: "onebot", subject: "1234",
