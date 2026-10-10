@@ -1205,6 +1205,37 @@ describe("applyPrismKoishiPlugin", () => {
     expect(leaveResult).toContain("已离开 大洋化学，麻将计费已停止。当前还剩 1/4 人。");
   });
 
+  it("does not report a free seat before the backend confirms Mahjong leave", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    let resolveStop!: () => void;
+    const stopped = new Promise<void>(resolve => { resolveStop = resolve; });
+    let stoppedInBackend = false;
+    client.listActiveSessions = async () => ({ sessions: stoppedInBackend ? [] : [
+      { id: "mahjong-1", playerId: "player-1", label: "大洋化学" },
+    ] });
+    client.stopSessionByIdentity = async () => {
+      await stopped;
+      stoppedInBackend = true;
+      return {};
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime",
+      currencyName: "猫粮", mahjongTableSize: 1,
+      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["mahjong-rate"] }],
+      client: client as any,
+    });
+    const action = registered.get("下桌")!.action;
+    const leaving = action({ session: { userId: "1" } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const tableBeforeStop = await registered.get("麻将列表")!.action({ session: { userId: "1" } });
+    expect(tableBeforeStop).toContain("游玩中 1/1");
+    resolveStop();
+    expect(await leaving).toContain("已离开 大洋化学");
+    expect(await registered.get("麻将列表")!.action({ session: { userId: "1" } }))
+      .toContain("空闲");
+  });
+
   it("clears mahjong table state when a seated player uses /logout directly", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();

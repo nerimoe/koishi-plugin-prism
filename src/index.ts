@@ -755,10 +755,12 @@ class PrismKoishiService {
 
     const sessionId = state.activeSessions[playerId];
     if (!sessionId) return "你当前未在任何麻将桌上。";
+    // Do not show an available seat while the backend session is still running.
+    // Failed stop requests must preserve the table state for safe retry.
+    await this.client.stopSessionByIdentity(this.identity(sender), sessionId);
     delete state.activeSessions[playerId];
     const remainingCount = Object.keys(state.activeSessions).length;
     const tableSize = this.config.mahjongTableSize ?? 4;
-    await this.client.stopSessionByIdentity(this.identity(sender), sessionId);
     return `已离开 ${tableSubject}，麻将计费已停止。当前还剩 ${remainingCount}/${tableSize} 人。`;
   }
 
