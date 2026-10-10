@@ -1335,7 +1335,34 @@ describe("applyPrismKoishiPlugin", () => {
 
     const startSessionCall = client.calls.find((c) => c[0] === "startSessionByIdentity");
     expect(startSessionCall).toBeDefined();
-    expect(startSessionCall[2]).toEqual({ pricingConfigIds: ["pricing-music-standard"], label: "自定义标签" });
+    expect(startSessionCall[2]).toEqual({ entry: true, pricingConfigIds: ["pricing-music-standard"], label: "自定义标签" });
+  });
+
+  it("marks Mahjong seats as separate activity sessions even when pricing rules overlap entry", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.listActiveSessions = async () => ({
+      sessions: [{ id: "entry-1", playerId: "player-1", label: "entry" }],
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      autoRegister: true, defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime", currencyName: "猫粮",
+      mahjongTableSize: 1,
+      loginPricingConfigIds: ["shared-rule"],
+      mahjongTableConfigs: [
+        { displayName: "麻将 A 桌", aliases: ["a"], pricingConfigIds: ["shared-rule"] },
+      ],
+      client: client as any,
+    });
+    const result = await registered.get("上桌 [tableId]")!.action({
+      session: { platform: "onebot", userId: "10086" },
+    }, "a");
+    expect(result).toContain("麻将计费已开始");
+    expect(client.calls).toContainEqual([
+      "startSessionByIdentity",
+      expect.objectContaining({ provider: "onebot", subject: "10086" }),
+      { pricingConfigIds: ["shared-rule"], label: "麻将 A 桌", entry: false },
+    ]);
   });
 
   it("prevents duplicate login when backend reports DUPLICATE_SESSION_LABEL", async () => {

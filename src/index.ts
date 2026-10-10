@@ -699,6 +699,7 @@ class PrismKoishiService {
       const result = (await this.client.startSessionByIdentity(this.identity(sender), {
         pricingConfigIds: tableConfig.pricingConfigIds,
         label,
+        entry: false,
       })) as UncheckedRecord;
       const session = (result?.session ?? {}) as UncheckedRecord;
       const sessionId = String(session.id ?? "");
@@ -726,6 +727,7 @@ class PrismKoishiService {
       const result = (await this.client.startSessionByIdentity(seat.identity, {
         pricingConfigIds: tableConfig.pricingConfigIds,
         label,
+        entry: false,
       })) as UncheckedRecord;
       const session = (result?.session ?? {}) as UncheckedRecord;
       const sessionId = String(session.id ?? "");
@@ -1280,13 +1282,13 @@ ${table.players.map(player => player.name).join("、")}`),
     }
   }
 
-  private loginSessionBody(): { pricingConfigIds?: string[]; label?: string } | undefined {
+  private loginSessionBody(): { pricingConfigIds?: string[]; label?: string; entry: true } {
     const pricingConfigIds = (this.config.loginPricingConfigIds ?? [])
       .map((id) => id.trim())
       .filter(Boolean);
     const label = this.config.loginSessionLabel?.trim();
-    if (pricingConfigIds.length === 0 && !label) return undefined;
     return {
+      entry: true,
       ...(pricingConfigIds.length === 0 ? {} : { pricingConfigIds }),
       ...(label ? { label } : {}),
     };
