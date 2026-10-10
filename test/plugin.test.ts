@@ -542,6 +542,37 @@ describe("applyPrismKoishiPlugin", () => {
     expect(await first).toBe(await second);
   });
 
+  it("never coalesces settlements from two adapters sharing a userId", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    const seen: string[] = [];
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    client.confirmCheckoutByIdentity = async (input: any) => {
+      seen.push(`${input.provider}:${input.subject}`);
+      await pending;
+      return {
+        playerSettlement: { playerId: `player-${input.provider}`, subtotal: 10, total: 10 },
+        settlements: [], chargeItems: [], adjustments: [],
+        checkoutAdjustments: [], pricingCapAdjustments: [],
+        globalCapWindows: [], assetLedgerEntries: [],
+        wallet: { balanceBefore: 100, balanceAfter: 90 },
+      };
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      autoRegister: true, defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime", currencyName: "猫粮", client: client as any,
+    });
+    const logout = registered.get("logout [target:user]")!.action;
+    const onebot = logout({ session: { platform: "onebot", userId: "10086" } });
+    const telegram = logout({ session: { platform: "telegram", userId: "10086" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(seen.sort()).toEqual(["onebot:10086", "telegram:10086"]);
+    release();
+    expect(await onebot).toContain("退场成功");
+    expect(await telegram).toContain("退场成功");
+  });
+
   it("registers administrator shortcuts with target authorization and staff writes", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
@@ -590,7 +621,7 @@ describe("applyPrismKoishiPlugin", () => {
     }, 30, "管理员调价"]);
     expect(client.calls).toContainEqual(["startSessionByIdentity", {
       provider: "onebot", subject: "262661418", autoRegister: true, displayName: "262661418",
-    }, undefined]);
+    }, { entry: true }]);
   });
 
   it("denies targeted administrator shortcuts when the staff whitelist is empty", async () => {
@@ -1174,6 +1205,37 @@ describe("applyPrismKoishiPlugin", () => {
     expect(leaveResult).toContain("已离开 大洋化学，麻将计费已停止。当前还剩 1/4 人。");
   });
 
+  it("does not report a free seat before the backend confirms Mahjong leave", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    let resolveStop!: () => void;
+    const stopped = new Promise<void>(resolve => { resolveStop = resolve; });
+    let stoppedInBackend = false;
+    client.listActiveSessions = async () => ({ sessions: stoppedInBackend ? [] : [
+      { id: "mahjong-1", playerId: "player-1", label: "大洋化学" },
+    ] });
+    client.stopSessionByIdentity = async () => {
+      await stopped;
+      stoppedInBackend = true;
+      return {};
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime",
+      currencyName: "猫粮", mahjongTableSize: 1,
+      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["mahjong-rate"] }],
+      client: client as any,
+    });
+    const action = registered.get("下桌")!.action;
+    const leaving = action({ session: { userId: "1" } });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const tableBeforeStop = await registered.get("麻将列表")!.action({ session: { userId: "1" } });
+    expect(tableBeforeStop).toContain("游玩中 1/1");
+    resolveStop();
+    expect(await leaving).toContain("已离开 大洋化学");
+    expect(await registered.get("麻将列表")!.action({ session: { userId: "1" } }))
+      .toContain("空闲");
+  });
+
   it("clears mahjong table state when a seated player uses /logout directly", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
@@ -1304,7 +1366,34 @@ describe("applyPrismKoishiPlugin", () => {
 
     const startSessionCall = client.calls.find((c) => c[0] === "startSessionByIdentity");
     expect(startSessionCall).toBeDefined();
-    expect(startSessionCall[2]).toEqual({ pricingConfigIds: ["pricing-music-standard"], label: "自定义标签" });
+    expect(startSessionCall[2]).toEqual({ entry: true, pricingConfigIds: ["pricing-music-standard"], label: "自定义标签" });
+  });
+
+  it("marks Mahjong seats as separate activity sessions even when pricing rules overlap entry", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.listActiveSessions = async () => ({
+      sessions: [{ id: "entry-1", playerId: "player-1", label: "entry" }],
+    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      autoRegister: true, defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime", currencyName: "猫粮",
+      mahjongTableSize: 1,
+      loginPricingConfigIds: ["shared-rule"],
+      mahjongTableConfigs: [
+        { displayName: "麻将 A 桌", aliases: ["a"], pricingConfigIds: ["shared-rule"] },
+      ],
+      client: client as any,
+    });
+    const result = await registered.get("上桌 [tableId]")!.action({
+      session: { platform: "onebot", userId: "10086" },
+    }, "a");
+    expect(result).toContain("麻将计费已开始");
+    expect(client.calls).toContainEqual([
+      "startSessionByIdentity",
+      expect.objectContaining({ provider: "onebot", subject: "10086" }),
+      { pricingConfigIds: ["shared-rule"], label: "麻将 A 桌", entry: false },
+    ]);
   });
 
   it("prevents duplicate login when backend reports DUPLICATE_SESSION_LABEL", async () => {
@@ -1777,10 +1866,76 @@ describe("applyPrismKoishiPlugin", () => {
     expect(client.calls).toContainEqual(["startSessionByIdentity", expect.anything(), {
       pricingConfigIds: ["pricing-mahjong-a"],
       label: "大洋化学",
+      entry: false,
     }]);
   });
 });
 
+
+it("sends real Koishi HTTP envelopes for entry, Mahjong seat and leave", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  const calls: Array<{ method: string; path: string; body?: any; token?: string }> = [];
+  const sessions = [{ id: "entry-1", playerId: "player-1", label: "entry" }];
+  const respond = (value: unknown) => ({ data: value });
+  const mockHttp = {
+    get: async (url: string, options: any) => {
+      const path = new URL(url).pathname;
+      calls.push({ method: "GET", path, token: options.headers.Authorization });
+      if (path.endsWith("/sessions/active")) return respond({ sessions: [...sessions] });
+      throw new Error(`Unmatched GET ${path}`);
+    },
+    post: async (url: string, body: any, options: any) => {
+      const path = new URL(url).pathname;
+      calls.push({ method: "POST", path, body, token: options.headers.Authorization });
+      if (path.endsWith("/players/by-identity/register"))
+        return respond({ player: { id: "player-1", displayName: "Test player", status: "active" } });
+      if (path.endsWith("/players/by-identity/session/start")) {
+        if (body.entry === true) return respond({ session: { id: "entry-1", playerId: "player-1" } });
+        if (body.entry === false) {
+          sessions.push({ id: "table-1", playerId: "player-1", label: "麻将 A 桌" });
+          return respond({ session: { id: "table-1", playerId: "player-1" } });
+        }
+      }
+      if (path.endsWith("/players/by-identity/sessions/table-1/stop")) {
+        sessions.splice(sessions.findIndex(row => row.id === "table-1"), 1);
+        return respond({ session: { id: "table-1", status: "closed" } });
+      }
+      throw new Error(`Unmatched POST ${path}`);
+    },
+  };
+  const ctx = { ...createMockKoishiContext(registered), http: mockHttp };
+  applyPrismKoishiPlugin(ctx, {
+    baseUrl: "https://prism.invalid",
+    shopCode: "audit",
+    integrationToken: "fake-integration-token",
+    autoRegister: true,
+    loginSessionLabel: "音游区间",
+    defaultDoorDeviceId: "door",
+    defaultScanProvider: "aime",
+    currencyName: "积分",
+    mahjongTableSize: 1,
+    mahjongTableConfigs: [
+      { displayName: "麻将 A 桌", aliases: ["a"], pricingConfigIds: ["pricing-a"] },
+    ],
+  });
+  const sender = { session: { platform: "onebot", userId: "1234" } };
+  expect(await registered.get("login [target:user]")!.action(sender)).toContain("入场成功");
+  expect(await registered.get("上桌 [tableId]")!.action(sender, "a")).toContain("麻将计费已开始");
+  expect(await registered.get("下桌")!.action(sender)).toContain("麻将计费已停止");
+  const starts = calls.filter(call => call.path.endsWith("/session/start"));
+  expect(starts).toHaveLength(2);
+  expect(starts.map(call => call.body.entry)).toEqual([true, false]);
+  expect(starts.map(call => call.body.label)).toEqual(["音游区间", "麻将 A 桌"]);
+  for (const call of calls) {
+    expect(call.path.startsWith("/api/v1/shops/audit/integration/")).toBe(true);
+    expect(call.token).toBe("Bearer fake-integration-token");
+    if (call.method === "POST") expect(call.body.identity).toMatchObject({
+      provider: "onebot", subject: "1234",
+    });
+  }
+  expect(calls.filter(call => call.path.endsWith("/sessions/table-1/stop"))).toHaveLength(1);
+  expect(sessions).toEqual([{ id: "entry-1", playerId: "player-1", label: "entry" }]);
+});
 
 it("binds each actual adapter sender without configuration overrides or channel restrictions", async () => {
   const registered = new Map<string, RegisteredCommand>();

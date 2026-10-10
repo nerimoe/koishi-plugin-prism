@@ -699,6 +699,7 @@ class PrismKoishiService {
       const result = (await this.client.startSessionByIdentity(this.identity(sender), {
         pricingConfigIds: tableConfig.pricingConfigIds,
         label,
+        entry: false,
       })) as UncheckedRecord;
       const session = (result?.session ?? {}) as UncheckedRecord;
       const sessionId = String(session.id ?? "");
@@ -726,6 +727,7 @@ class PrismKoishiService {
       const result = (await this.client.startSessionByIdentity(seat.identity, {
         pricingConfigIds: tableConfig.pricingConfigIds,
         label,
+        entry: false,
       })) as UncheckedRecord;
       const session = (result?.session ?? {}) as UncheckedRecord;
       const sessionId = String(session.id ?? "");
@@ -753,10 +755,12 @@ class PrismKoishiService {
 
     const sessionId = state.activeSessions[playerId];
     if (!sessionId) return "你当前未在任何麻将桌上。";
+    // Do not show an available seat while the backend session is still running.
+    // Failed stop requests must preserve the table state for safe retry.
+    await this.client.stopSessionByIdentity(this.identity(sender), sessionId);
     delete state.activeSessions[playerId];
     const remainingCount = Object.keys(state.activeSessions).length;
     const tableSize = this.config.mahjongTableSize ?? 4;
-    await this.client.stopSessionByIdentity(this.identity(sender), sessionId);
     return `已离开 ${tableSubject}，麻将计费已停止。当前还剩 ${remainingCount}/${tableSize} 人。`;
   }
 
@@ -786,14 +790,17 @@ class PrismKoishiService {
   }
 
   async logout(sender: Sender, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
-    const existing = this.logoutInFlight.get(sender.id);
+    // A Koishi instance can receive identical userId values from different adapters.
+    // In-flight settlement coalescing must use the same composite identity as Bot RPC.
+    const key = `${sender.provider}:${sender.id}`;
+    const existing = this.logoutInFlight.get(key);
     if (existing) return existing;
     const task = this.performLogout(sender, bot);
-    this.logoutInFlight.set(sender.id, task);
+    this.logoutInFlight.set(key, task);
     try {
       return await task;
     } finally {
-      if (this.logoutInFlight.get(sender.id) === task) this.logoutInFlight.delete(sender.id);
+      if (this.logoutInFlight.get(key) === task) this.logoutInFlight.delete(key);
     }
   }
 
@@ -1277,13 +1284,13 @@ ${table.players.map(player => player.name).join("、")}`),
     }
   }
 
-  private loginSessionBody(): { pricingConfigIds?: string[]; label?: string } | undefined {
+  private loginSessionBody(): { pricingConfigIds?: string[]; label?: string; entry: true } {
     const pricingConfigIds = (this.config.loginPricingConfigIds ?? [])
       .map((id) => id.trim())
       .filter(Boolean);
     const label = this.config.loginSessionLabel?.trim();
-    if (pricingConfigIds.length === 0 && !label) return undefined;
     return {
+      entry: true,
       ...(pricingConfigIds.length === 0 ? {} : { pricingConfigIds }),
       ...(label ? { label } : {}),
     };
