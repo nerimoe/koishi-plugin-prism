@@ -786,14 +786,17 @@ class PrismKoishiService {
   }
 
   async logout(sender: Sender, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
-    const existing = this.logoutInFlight.get(sender.id);
+    // A Koishi instance can receive identical userId values from different adapters.
+    // In-flight settlement coalescing must use the same composite identity as Bot RPC.
+    const key = `${sender.provider}:${sender.id}`;
+    const existing = this.logoutInFlight.get(key);
     if (existing) return existing;
     const task = this.performLogout(sender, bot);
-    this.logoutInFlight.set(sender.id, task);
+    this.logoutInFlight.set(key, task);
     try {
       return await task;
     } finally {
-      if (this.logoutInFlight.get(sender.id) === task) this.logoutInFlight.delete(sender.id);
+      if (this.logoutInFlight.get(key) === task) this.logoutInFlight.delete(key);
     }
   }
 

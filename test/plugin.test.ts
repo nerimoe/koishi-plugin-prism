@@ -542,6 +542,37 @@ describe("applyPrismKoishiPlugin", () => {
     expect(await first).toBe(await second);
   });
 
+  it("never coalesces settlements from two adapters sharing a userId", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    const seen: string[] = [];
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    client.confirmCheckoutByIdentity = async (input: any) => {
+      seen.push(`${input.provider}:${input.subject}`);
+      await pending;
+      return {
+        playerSettlement: { playerId: `player-${input.provider}`, subtotal: 10, total: 10 },
+        settlements: [], chargeItems: [], adjustments: [],
+        checkoutAdjustments: [], pricingCapAdjustments: [],
+        globalCapWindows: [], assetLedgerEntries: [],
+        wallet: { balanceBefore: 100, balanceAfter: 90 },
+      };
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+      autoRegister: true, defaultDoorDeviceId: "front-door",
+      defaultScanProvider: "aime", currencyName: "猫粮", client: client as any,
+    });
+    const logout = registered.get("logout [target:user]")!.action;
+    const onebot = logout({ session: { platform: "onebot", userId: "10086" } });
+    const telegram = logout({ session: { platform: "telegram", userId: "10086" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(seen.sort()).toEqual(["onebot:10086", "telegram:10086"]);
+    release();
+    expect(await onebot).toContain("退场成功");
+    expect(await telegram).toContain("退场成功");
+  });
+
   it("registers administrator shortcuts with target authorization and staff writes", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
