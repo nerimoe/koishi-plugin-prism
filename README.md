@@ -41,7 +41,7 @@
 
 配置 `baseUrl`、`shopCode` 和本店的 Integration 令牌后，插件调用 `/api/v1/shops/:shopCode/integration`；单店兼容部署调用 `/api/v1/integration`。
 
-玩家在网页取得验证码后，向任意已接入的店铺 Bot 发送 `prism.bind 验证码`。所有命令从消息的 `session.platform` 和 `session.userId` 读取身份，发送 `{ code, provider, subject }`，不接受手填或代填身份；`provider` 配置已移除。例如同一实例的 OneBot 和 Telegram 消息分别使用 `onebot:114514` 和 `telegram:114514`。群／私聊过滤交给 Koishi。网页账号可以跨店使用，平台验证、玩家和余额按店铺隔离；同一网页账号追加平台绑定时复用同一个玩家。
+玩家在网页取得验证码后，向任意已接入的店铺 Bot 发送 `bind 验证码`（旧命令 `prism.bind` 仍可用）。店家可以在 PRiSM「设置 → Bot 与接入」改写玩家看到的绑定提示。所有命令从消息的 `session.platform` 和 `session.userId` 读取身份，发送 `{ code, provider, subject }`，不接受手填或代填身份；`provider` 配置已移除。例如同一实例的 OneBot 和 Telegram 消息分别使用 `onebot:114514` 和 `telegram:114514`。群／私聊过滤交给 Koishi。网页账号可以跨店使用，平台验证、玩家和余额按店铺隔离；同一网页账号追加平台绑定时复用同一个玩家。
 
 店主在 React「设置」控制是否要求平台身份，任意一个验证平台即可满足。默认开启；关闭后登录网页账号即可入场。已有标识不会自动改名，需店主在「平台身份转换」输入原标识与目标标识，预览冲突后主动执行，例如 `qq → onebot`。余额和账单不变，原标识若未转换，OneBot 新身份不会自动认领它。
 

@@ -198,7 +198,7 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     }
   };
 
-  ctx.command("prism.bind <code:string>", "绑定网页登录账号到当前平台身份").action(wrap(async (context, code) => {
+  const bind = wrap(async (context, code) => {
     const sender = await service.sender(context);
     if (!config.shopCode || !config.baseUrl || !config.integrationToken) return "请店家配置统一平台店铺编号与 Bot 凭据";
     const response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/v1/shops/${encodeURIComponent(config.shopCode)}/integration/platform-binding/confirm`, {
@@ -207,7 +207,10 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     });
     const body = await response.json() as { error?: { message: string } };
     return response.ok ? "绑定成功，请返回网页继续操作" : body.error?.message ?? "绑定失败，请重新生成验证码";
-  }));
+  });
+  ctx.command("bind <code:string>", "绑定网页登录账号到当前平台身份").action(bind);
+  // Instructions already handed to players may still say prism.bind.
+  ctx.command("prism.bind <code:string>", "绑定网页登录账号到当前平台身份（旧命令，同 bind）").action(bind);
 
   ctx.command("register", "绑定或注册当前平台用户到 PRiSM").action(wrap(async (context) =>
     service.register(await service.sender(context)),

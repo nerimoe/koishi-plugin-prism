@@ -314,6 +314,7 @@ describe("applyPrismKoishiPlugin", () => {
     applyPrismKoishiPlugin(ctx, config);
 
     const expected = [
+      "bind <code:string>",
       "prism.bind <code:string>",
       "register",
       "login [target:user]",
@@ -1950,8 +1951,9 @@ it("binds each actual adapter sender without configuration overrides or channel 
     return Response.json({data:{playerId:"p"}});
   }) as typeof fetch;
   try {
-    const command = registered.get("prism.bind <code:string>")!;
+    const command = registered.get("bind <code:string>")!;
     expect(await command.action({session:{platform:undefined,userId:"123456"}},"ABCD2345")).toContain("无法获取");
+    expect(registered.get("prism.bind <code:string>")!.action).toBeDefined();
     for (const platform of ["onebot","telegram","discord"]) for (const isDirect of [false,true]) {
       expect(await command.action({session:{platform,userId:"114514",senderId:"forged",isDirect}},"ABCD2345")).toContain("绑定成功");
     }
