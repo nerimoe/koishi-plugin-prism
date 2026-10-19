@@ -34,6 +34,8 @@
 | `enableStaffCommands` | `boolean` | `false` | 是否开启管理员快捷指令。 |
 | `staffUserIds` | `string[]` | `[]` | 允许执行管理员快捷指令的平台身份（如 `onebot:114514`、`telegram:114514`）白名单。空列表不授予目标用户操作权限。 |
 | `powerCommandsAdminOnly` | `boolean` | `false` | 关机是否仅允许 `staffUserIds` 中的管理员使用。`/on` 始终只允许已入场玩家使用。 |
+| `playerCommands` | `"all" \| "readonly"` | `"all"` | 玩家可用的命令。`readonly` 时玩家只能绑定身份（`bind`）、查询（`wallet`、`billing`、`history`、`items`、`list`、`show`、`麻将列表`、`versions`、`api测速`）和兑换（`redeem`）；入场、结账、上下桌和设备操作（`login`/`入场`、`logout`、`mahjong`/`上桌`/`下桌`、`lock`、`on`、`off`、`coin`、`scan`）只有 `staffUserIds` 中的管理员能用，包括替其他玩家操作。适合让 Bot 只负责身份绑定与查询、入场结账都在网页或 App Clip 里完成的店。 |
+| `readOnlyNotice` | `string` | `请扫描设备上的二维码或碰 NFC，在网页或 App Clip 里操作` | 只读模式下玩家使用受限命令时 Bot 的回复。 |
 | `logoutNotifyUserIds` | `string[]` | `[]` | 结账成功后额外私聊完整账单的平台身份。通知收件人为该列表与 `staffUserIds` 的去重并集。 |
 | `mahjongTableConfigs` | `object[]` | `[]` | 推荐的结构化麻将桌列表。每项填写显示名称、命令别名列表与计费方案 ID 列表。显示名称同时作为内部桌位锚点与 session 标签。 |
 
@@ -64,7 +66,7 @@ pricingConfigIds: [pricing-mahjong-a]
 ## 📝 机器人指令列表
 
 ### 玩家指令
-* `register` - 绑定或注册当前平台账号到 PRiSM 账户。
+* `bind <验证码>` - 把网页登录账号绑定到当前平台身份（旧命令 `prism.bind` 仍可用）。玩家第一次绑定时是否自动建档由店铺设置决定，原来的 `register` 命令已移除。
 * `login` / `入场` - 开启当前玩家的计费场次。
 * `logout` - 结算当前玩家的计费场次。
 玩家在未产生任何费用时退场，机器人会简洁显示“本次未产生费用”和当前余额；存在收费或优惠明细时仍显示完整结算账单。负单价 session 会在区间明细中保留真实的负数计费贡献，只有后端汇总全部 session 后的最终应付金额会限制为不低于 `0`。

@@ -18,6 +18,11 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   enableStaffCommands: Schema.boolean().default(false).description("是否启用管理员指令"),
   staffUserIds: Schema.array(Schema.string()).default([]).description("允许执行管理员指令的平台身份列表（如 onebot:123456、telegram:123456）"),
   powerCommandsAdminOnly: Schema.boolean().default(false).description("关机是否仅允许管理员使用；开机始终仅已入场玩家可用"),
+  playerCommands: Schema.union([
+    Schema.const("all").description("全部：玩家可以在 Bot 里入场、结账、上下桌和操作设备"),
+    Schema.const("readonly").description("只读：玩家只能绑定身份、查询和兑换；入场、结账、上下桌和设备操作仅管理员可用"),
+  ]).default("all").description("玩家可用的命令"),
+  readOnlyNotice: Schema.string().default("请扫描设备上的二维码或碰 NFC，在网页或 App Clip 里操作").description("只读模式下玩家使用受限命令时的回复"),
   logoutNotifyUserIds: Schema.array(Schema.string()).default([]).description("结账账单私聊通知的平台身份列表（如 onebot:123456）"),
   powerOffInterval: Schema.number().default(0).description("无人自动关机等待秒数 (0为禁用)"),
   mahjongTableConfigs: Schema.array(Schema.object({
@@ -56,6 +61,9 @@ export type MahjongTableConfigInput = Omit<MahjongTableConfig, "tableId">;
 
 export type PrismKoishiPluginConfig = {
   autoRegister: boolean;
+  /** "readonly" leaves players binding, lookups and redeeming; staff keep every command. */
+  playerCommands?: "all" | "readonly";
+  readOnlyNotice?: string;
   loginPricingConfigIds?: string[];
   loginSessionLabel?: string;
   defaultDoorDeviceId: string;
@@ -212,27 +220,34 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
   // Instructions already handed to players may still say prism.bind.
   ctx.command("prism.bind <code:string>", "绑定网页登录账号到当前平台身份（旧命令，同 bind）").action(bind);
 
-  ctx.command("register", "绑定或注册当前平台用户到 PRiSM").action(wrap(async (context) =>
-    service.register(await service.sender(context)),
-  ));
+  // In read-only mode a player may look things up and redeem, but anything that
+  // starts billing, settles a bill or drives a device is left to staff.
+  const effect = (
+    handler: (context: KoishiActionContext, ...args: string[]) => Promise<string> | string,
+  ) => wrap(async (context, ...args) => {
+    if (config.playerCommands === "readonly" && !matchesPlatformIdentity(config.staffUserIds ?? [], await service.sender(context))) {
+      return config.readOnlyNotice || "请扫描设备上的二维码或碰 NFC，在网页或 App Clip 里操作";
+    }
+    return handler(context, ...args);
+  });
 
-  ctx.command("login [target:user]", "开启玩家计费场次").action(wrap(async (context, target) =>
+  ctx.command("login [target:user]", "开启玩家计费场次").action(effect(async (context, target) =>
     service.loginForTarget(await service.sender(context), target, context.session?.bot),
   ));
 
-  ctx.command("入场 [target:user]", "入场").action(wrap(async (context, target) =>
+  ctx.command("入场 [target:user]", "入场").action(effect(async (context, target) =>
     service.loginForTarget(await service.sender(context), target, context.session?.bot),
   ));
 
-  ctx.command("mahjong <tableId>", "加入指定麻将桌").action(wrap(async (context, tableId) =>
+  ctx.command("mahjong <tableId>", "加入指定麻将桌").action(effect(async (context, tableId) =>
     service.mahjongJoin(await service.sender(context), tableId),
   ));
 
-  ctx.command("上桌 [tableId]", "加入指定麻将桌").action(wrap(async (context, tableId) =>
+  ctx.command("上桌 [tableId]", "加入指定麻将桌").action(effect(async (context, tableId) =>
     service.mahjongJoin(await service.sender(context), tableId),
   ));
 
-  ctx.command("下桌", "离开当前所在麻将桌").action(wrap(async (context) =>
+  ctx.command("下桌", "离开当前所在麻将桌").action(effect(async (context) =>
     service.mahjongLeave(await service.sender(context)),
   ));
 
@@ -240,7 +255,7 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.listMahjongTables(),
   ));
 
-  ctx.command("logout [target:user]", "结算玩家计费场次").action(wrap(async (context, target) =>
+  ctx.command("logout [target:user]", "结算玩家计费场次").action(effect(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.logout(sender, context.session?.bot), context.session?.bot),
   ));
 
@@ -276,24 +291,24 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.withTarget(await service.sender(context), target, (sender) => service.history(sender), context.session?.bot),
   ));
 
-  ctx.command("lock", "向默认门锁设备发送开门指令").action(wrap(async (context) =>
+  ctx.command("lock", "向默认门锁设备发送开门指令").action(effect(async (context) =>
     service.lock(await service.sender(context)),
   ));
 
-  ctx.command("on <deviceRef>", "请求启动指定设备电源").action(wrap(async (context, deviceRef) =>
+  ctx.command("on <deviceRef>", "请求启动指定设备电源").action(effect(async (context, deviceRef) =>
     service.powerOn(await service.sender(context), deviceRef),
   ));
 
-  ctx.command("off <deviceRef>", "请求关闭指定设备电源").action(wrap(async (context, deviceRef) =>
+  ctx.command("off <deviceRef>", "请求关闭指定设备电源").action(effect(async (context, deviceRef) =>
     service.powerOff(await service.sender(context), deviceRef),
   ));
 
   ctx.command("coin <deviceRef> [count]", "请求向指定设备投币").action(
-    wrap(async (context, deviceRef, count) => service.coin(await service.sender(context), deviceRef, count)),
+    effect(async (context, deviceRef, count) => service.coin(await service.sender(context), deviceRef, count)),
   );
 
   ctx.command("scan <deviceRef>", "使用当前玩家绑定的 Aime 卡刷卡").action(
-    wrap(async (context, deviceRef) => service.scan(await service.sender(context), deviceRef)),
+    effect(async (context, deviceRef) => service.scan(await service.sender(context), deviceRef)),
   );
 
   ctx.command("redeem <code>", "兑换 PRiSM 礼物码").action(wrap(async (context, code) =>

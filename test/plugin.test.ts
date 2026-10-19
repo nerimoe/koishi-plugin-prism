@@ -316,7 +316,6 @@ describe("applyPrismKoishiPlugin", () => {
     const expected = [
       "bind <code:string>",
       "prism.bind <code:string>",
-      "register",
       "login [target:user]",
       "入场 [target:user]",
       "mahjong <tableId>",
@@ -2000,15 +1999,42 @@ it("uses the message adapter for every billing identity and scopes staff privile
     enableStaffCommands:true,staffUserIds:["onebot:114514"],client,
   });
   for(const platform of ["onebot","telegram"]){
-    await registered.get("register")!.action({session:{platform,userId:"114514",senderName:platform}});
+    await registered.get("billing [target:user]")!.action({session:{platform,userId:"114514",senderName:platform}});
     await registered.get("wallet [target:user]")!.action({session:{platform,userId:"114514"}});
-    expect(client.calls).toContainEqual(["resolveOrRegisterIdentity",{provider:platform,subject:"114514",autoRegister:true,displayName:platform}]);
+    expect(client.calls.find((call:any)=>call[0]==="previewCheckoutByIdentity"&&call[1]?.provider===platform)?.[1])
+      .toMatchObject({provider:platform,subject:"114514",displayName:platform});
   }
   const telegram={session:{platform:"telegram",userId:"114514"}};
   expect(await registered.get("login [target:user]")!.action(telegram,"telegram:someone")).toBe("权限不足");
   const onebot={session:{platform:"onebot",userId:"114514"}};
   expect(await registered.get("login [target:user]")!.action(onebot,"telegram:someone")).toBe("请在目标平台使用该命令");
   expect(await registered.get("login [target:user]")!.action(onebot,"onebot:someone")).toContain("入场成功");
+});
+
+it("leaves read-only players lookups, binding and redeeming while staff keep every command",async()=>{
+  const registered=new Map<string,RegisteredCommand>();
+  const client=createDefaultClient();
+  applyPrismKoishiPlugin(createMockKoishiContext(registered),{
+    autoRegister:true,defaultDoorDeviceId:"front-door",defaultScanProvider:"aime",currencyName:"猫粮",
+    enableStaffCommands:true,staffUserIds:["onebot:999"],playerCommands:"readonly",readOnlyNotice:"请扫码操作",client,
+  });
+  const player={session:{platform:"onebot",userId:"114514"}};
+  const effects:[string,string[]][]=[
+    ["login [target:user]",[]],["入场 [target:user]",[]],["logout [target:user]",[]],
+    ["mahjong <tableId>",["a"]],["上桌 [tableId]",["a"]],["下桌",[]],
+    ["lock",[]],["on <deviceRef>",["maimai"]],["off <deviceRef>",["maimai"]],
+    ["coin <deviceRef> [count]",["maimai"]],["scan <deviceRef>",["maimai"]],
+  ];
+  for(const [name,args] of effects) expect(await registered.get(name)!.action(player,...args)).toBe("请扫码操作");
+  expect(client.calls.some((call:any)=>["startSessionByIdentity","confirmCheckoutByIdentity"].includes(call[0]))).toBe(false);
+  for(const name of ["wallet [target:user]","billing [target:user]","history [target:user]","items [target:user]","list","show [deviceId]","麻将列表","versions"]) {
+    expect(await registered.get(name)!.action(player)).not.toBe("请扫码操作");
+  }
+  expect(await registered.get("redeem <code>")!.action(player,"CODE")).not.toBe("请扫码操作");
+  expect(registered.has("register")).toBe(false);
+  const staff={session:{platform:"onebot",userId:"999"}};
+  expect(await registered.get("login [target:user]")!.action(staff)).toContain("入场成功");
+  expect(await registered.get("login [target:user]")!.action(staff,"onebot:114514")).toContain("入场成功");
 });
 
 it("sends settlement notices only through the sender adapter",async()=>{
