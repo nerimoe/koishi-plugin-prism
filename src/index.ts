@@ -7,8 +7,8 @@ export const version = packageMetadata.version;
 
 export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   autoRegister: Schema.boolean().default(true).description("是否自动注册"),
-  shopCode: Schema.string().description("统一平台店铺编号（单店兼容模式留空）"),
-  baseUrl: Schema.string().description("PRiSM 后端 API Base URL"),
+  shopCode: Schema.string().required().description("统一平台店铺编号"),
+  baseUrl: Schema.string().required().description("PRiSM 后端地址，例如 https://link.neri.moe"),
   integrationToken: Schema.string().role("secret").description("集成 API Token"),
   currencyName: Schema.string().default("猫粮").description("代币名称"),
   defaultDoorDeviceId: Schema.string().default("front-door").description("默认开门设备名或别名"),
@@ -24,7 +24,8 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   ]).default("all").description("玩家可用的命令"),
   readOnlyNotice: Schema.string().default("请扫描设备上的二维码或碰 NFC，在网页或 App Clip 里操作").description("只读模式下玩家使用受限命令时的回复"),
   logoutNotifyUserIds: Schema.array(Schema.string()).default([]).description("结账账单私聊通知的平台身份列表（如 onebot:123456）"),
-  powerOffInterval: Schema.number().default(0).description("无人自动关机等待秒数 (0为禁用)"),
+  idleNotifyChannelIds: Schema.array(Schema.string()).default([]).description("闲置自动关机的提醒发到哪里：群写 onebot:群号，私聊写 onebot:private:QQ号"),
+  idleReminderMinutes: Schema.number().min(0).max(120).default(5).description("自动关机前几分钟提醒（0 为不提醒）"),
   mahjongTableConfigs: Schema.array(Schema.object({
     displayName: Schema.string().required().description("桌位显示名称和 session 标签"),
     aliases: Schema.array(Schema.string()).default([]).description("命令别名（至少一个），例如 a、四麻A"),
@@ -75,7 +76,10 @@ export type PrismKoishiPluginConfig = {
   logoutNotifyUserIds?: string[];
   mahjongTableConfigs?: MahjongTableConfigInput[];
   mahjongTableSize?: number;
-  powerOffInterval?: number;
+  /** Channels (`platform:channelId`) told before an idle power-off. */
+  idleNotifyChannelIds?: string[];
+  /** How many minutes before an idle power-off to tell them; 0 for never. */
+  idleReminderMinutes?: number;
   /**
    * Used by /list to resolve player display names from the chat platform.
    * For Koishi, this maps an adapter subject and provider to a nickname (e.g. the
@@ -93,7 +97,19 @@ export type PrismKoishiPluginConfig = {
 
   // Optional client injection (mainly for unit tests / mock)
   client?: any;
+  /** Opens the platform connection; defaults to Koishi's `ctx.http.ws`. Mainly for tests. */
+  socket?: SocketFactory;
 };
+
+/** The parts of a WebSocket the plugin uses; both `ws` and browser sockets fit. */
+export type SocketLike = {
+  readonly readyState: number;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  addEventListener(type: "open" | "message" | "close" | "error", listener: (event: any) => void): void;
+};
+
+export type SocketFactory = (url: string, headers: Record<string, string>) => SocketLike;
 
 export type KoishiCommandRegistration = {
   description: string;
@@ -106,10 +122,12 @@ export type KoishiCommandBuilder = {
 
 export type KoishiLikeContext = {
   command(name: string, description: string): KoishiCommandBuilder;
-  setInterval?(handler: () => Promise<void> | void, intervalMs: number): void;
   logger?(name: string): {
     warn(...args: unknown[]): void;
   };
+  /** Send to channels as `platform:channelId`. */
+  broadcast?(channels: string[], content: string): Promise<unknown>;
+  on?(event: "dispose", listener: () => void): void;
 };
 
 export type KoishiActionContext = {
@@ -136,6 +154,7 @@ const USAGE: Record<string, string> = {
   api_benchmark: "/api测速 [次数]",
   prism_on: "/prism on <设备名|别名|all>",
   prism_off: "/prism off <设备名|别名|all>",
+  prism_keep: "/keep <设备名或别名>",
   prism_coin: "/prism coin <设备名或别名> [数量]",
   prism_scan: "/prism scan <设备名或别名>",
   prism_redeem: "/prism redeem <兑换码>",
@@ -206,16 +225,7 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     }
   };
 
-  const bind = wrap(async (context, code) => {
-    const sender = await service.sender(context);
-    if (!config.shopCode || !config.baseUrl || !config.integrationToken) return "请店家配置统一平台店铺编号与 Bot 凭据";
-    const response = await fetch(`${config.baseUrl.replace(/\/+$/, "")}/api/v1/shops/${encodeURIComponent(config.shopCode)}/integration/platform-binding/confirm`, {
-      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.integrationToken}` },
-      body: JSON.stringify({ code, provider: sender.provider, subject: sender.id }),
-    });
-    const body = await response.json() as { error?: { message: string } };
-    return response.ok ? "绑定成功，请返回网页继续操作" : body.error?.message ?? "绑定失败，请重新生成验证码";
-  });
+  const bind = wrap(async (context, code) => service.bind(await service.sender(context), code));
   ctx.command("bind <code:string>", "绑定网页登录账号到当前平台身份").action(bind);
   // Instructions already handed to players may still say prism.bind.
   ctx.command("prism.bind <code:string>", "绑定网页登录账号到当前平台身份（旧命令，同 bind）").action(bind);
@@ -303,6 +313,12 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.powerOff(await service.sender(context), deviceRef),
   ));
 
+  // Not limited by read-only mode: it never switches anything on, and the
+  // platform only accepts it from an entered player for a device that is on.
+  ctx.command("keep <deviceRef>", "延迟闲置设备的自动关机").action(wrap(async (context, deviceRef) =>
+    service.keep(await service.sender(context), deviceRef),
+  ));
+
   ctx.command("coin <deviceRef> [count]", "请求向指定设备投币").action(
     effect(async (context, deviceRef, count) => service.coin(await service.sender(context), deviceRef, count)),
   );
@@ -329,33 +345,164 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     ),
   );
 
-  const intervalMs = (config.powerOffInterval ?? 0) * 1000;
-  if (intervalMs > 0 && typeof ctx.setInterval === "function") {
-    ctx.setInterval(() => {
-      service.autoPowerOffLoop().catch(() => {
-        /* swallow */
-      });
-    }, intervalMs);
+  ctx.on?.("dispose", () => service.dispose());
+}
+
+/* --------------------------- platform connection --------------------------- */
+
+const SOCKET_OPEN = 1;
+const REQUEST_TIMEOUT_MS = 30_000;
+const PING_MS = 30_000;
+const FIRST_RETRY_MS = 1000;
+const MAX_RETRY_MS = 30_000;
+
+type PlatformEvent = { event: string; data: unknown };
+
+/**
+ * The one connection to PRiSM. Requests go out as frames and are matched to
+ * their replies by id; the platform also pushes events down it. While it is
+ * down a request fails at once: queueing a checkout or a top-up to run later
+ * would make players repeat it, and a resend could run it twice.
+ */
+export class PrismSocket {
+  private socket: SocketLike | null = null;
+  private readonly pending = new Map<string, { resolve(value: { status: number; body: any }): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
+  private retryMs = FIRST_RETRY_MS;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private lastHeard = 0;
+  private stopped = false;
+  private sequence = 0;
+
+  constructor(
+    private readonly open: SocketFactory,
+    private readonly url: string,
+    private readonly token: string,
+    private readonly hello: Record<string, unknown>,
+    private readonly onEvent: (event: PlatformEvent) => void,
+    private readonly logger?: { warn(...args: unknown[]): void },
+  ) {}
+
+  start(): void {
+    this.stopped = false;
+    this.connect();
   }
+
+  stop(): void {
+    this.stopped = true;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    this.socket?.close(1000, "dispose");
+    this.socket = null;
+    this.failPending();
+  }
+
+  private connect(): void {
+    let socket: SocketLike;
+    try {
+      socket = this.open(this.url, { Authorization: `Bearer ${this.token}` });
+    } catch (error) {
+      this.logger?.warn("PRiSM connection failed", error);
+      this.reconnectLater();
+      return;
+    }
+    this.socket = socket;
+    socket.addEventListener("open", () => {
+      this.retryMs = FIRST_RETRY_MS;
+      this.lastHeard = Date.now();
+      socket.send(JSON.stringify({ type: "hello", ...this.hello }));
+      if (this.pingTimer) clearInterval(this.pingTimer);
+      this.pingTimer = setInterval(() => {
+        // Two missed pings: the connection is gone even if no close arrived.
+        if (Date.now() - this.lastHeard > PING_MS * 2) socket.close(4000, "silent");
+        else if (socket.readyState === SOCKET_OPEN) socket.send("ping");
+      }, PING_MS);
+    });
+    socket.addEventListener("message", (event) => this.receive(String(event?.data ?? "")));
+    socket.addEventListener("close", () => {
+      if (this.socket !== socket) return;
+      this.socket = null;
+      if (this.pingTimer) clearInterval(this.pingTimer);
+      this.failPending();
+      this.reconnectLater();
+    });
+    socket.addEventListener("error", (error) => this.logger?.warn("PRiSM connection error", error?.message ?? error));
+  }
+
+  private reconnectLater(): void {
+    if (this.stopped) return;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => this.connect(), this.retryMs);
+    this.retryMs = Math.min(this.retryMs * 2, MAX_RETRY_MS);
+  }
+
+  private failPending(): void {
+    for (const [, waiter] of this.pending) {
+      clearTimeout(waiter.timer);
+      waiter.reject(unreachable());
+    }
+    this.pending.clear();
+  }
+
+  private receive(raw: string): void {
+    this.lastHeard = Date.now();
+    if (raw === "pong") return;
+    let frame: any;
+    try {
+      frame = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (frame?.type === "response" && typeof frame.id === "string") {
+      const waiter = this.pending.get(frame.id);
+      if (!waiter) return;
+      this.pending.delete(frame.id);
+      clearTimeout(waiter.timer);
+      waiter.resolve({ status: Number(frame.status) || 500, body: frame.body });
+    } else if (frame?.type === "event" && typeof frame.event === "string") {
+      try {
+        this.onEvent({ event: frame.event, data: frame.data });
+      } catch (error) {
+        this.logger?.warn("PRiSM event handling failed", error);
+      }
+    }
+  }
+
+  request(frame: { method: "GET" | "POST" | "PUT"; path: string; query?: Record<string, unknown>; body?: unknown }): Promise<{ status: number; body: any }> {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== SOCKET_OPEN) return Promise.reject(unreachable());
+    const id = `${Date.now().toString(36)}-${(this.sequence++).toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new PrismBotClientError("服务器没有及时回应，请稍后确认结果", "API_TIMEOUT", 0, {}));
+      }, REQUEST_TIMEOUT_MS);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        socket.send(JSON.stringify({ type: "request", id, ...frame }));
+      } catch {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(unreachable());
+      }
+    });
+  }
+}
+
+function unreachable() {
+  return new PrismBotClientError("暂时连不上服务器", "API_UNREACHABLE", 0, {});
+}
+
+/** The platform connection URL for a shop. */
+export function platformSocketUrl(baseUrl: string, shopCode: string): string {
+  const base = baseUrl.trim().replace(/\/+$/, "").replace(/^http/i, "ws");
+  return `${base}/api/v1/shops/${encodeURIComponent(shopCode)}/integration/ws`;
 }
 
 /* ----------------------------- api client ---------------------------------- */
 
 class PrismApiClient {
-  constructor(
-    private readonly http: any,
-    private readonly config: {
-      shopCode?: string;
-      baseUrl: string;
-      integrationToken: string;
-    },
-  ) { }
-
-  private get headers() {
-    return {
-      "Content-Type": "application/json",
-    };
-  }
+  constructor(private readonly socket: PrismSocket) {}
 
   private async request<T = any>(
     method: "GET" | "POST" | "PUT",
@@ -367,52 +514,31 @@ class PrismApiClient {
       query?: Record<string, string | number | boolean | null | undefined>;
     },
   ): Promise<T> {
-    let url = path.replace(/^\/rpc\//, this.config.shopCode ? `/api/v1/shops/${encodeURIComponent(this.config.shopCode)}/` : "/api/v1/");
-    if (options.params) {
-      for (const [key, value] of Object.entries(options.params)) {
-        url = url.replace(`:${key}`, encodeURIComponent(String(value)));
-      }
+    let target = path.replace(/^\/rpc\//, "");
+    for (const [key, value] of Object.entries(options.params ?? {})) {
+      target = target.replace(`:${key}`, encodeURIComponent(String(value)));
     }
-    const fullUrl = `${this.config.baseUrl.replace(/\/+$/, "")}${url}`;
-    const headers: Record<string, string> = {
-      ...this.headers,
-    };
-    if (options.token) {
-      headers["Authorization"] = `Bearer ${options.token}`;
+    const { status, body } = await this.socket.request({
+      method,
+      path: target,
+      ...(options.query ? { query: options.query } : {}),
+      ...(method === "GET" ? {} : { body: options.body ?? {} }),
+    });
+    if (status >= 400) {
+      const err = body && typeof body === "object" && typeof body.error === "object" ? body.error : {};
+      throw new PrismBotClientError(
+        typeof err.message === "string" ? err.message : `Backend request failed with HTTP ${status}.`,
+        typeof err.code === "string" ? err.code : `HTTP_${status}`,
+        status,
+        body ?? {},
+      );
     }
-
-    try {
-      const config = { headers, params: options.query };
-      let response: any;
-      if (method === "GET") {
-        response = await this.http.get(fullUrl, config);
-      } else if (method === "POST") {
-        response = await this.http.post(fullUrl, options.body ?? {}, config);
-      } else if (method === "PUT") {
-        response = await this.http.put(fullUrl, options.body ?? {}, config);
-      } else {
-        throw new Error(`Unsupported method ${method}`);
-      }
-      return response && typeof response === "object" && Object.hasOwn(response, "data") ? response.data : response;
-    } catch (error: any) {
-      if (error?.response) {
-        const body = error.response.data ?? {};
-        const err = typeof body === "object" && body !== null && typeof body.error === "object"
-          ? body.error
-          : {};
-        const status = Number(error.response.status) || 500;
-        throw new PrismBotClientError(
-          typeof err.message === "string" ? err.message : `Backend request failed with HTTP ${status}.`,
-          typeof err.code === "string" ? err.code : `HTTP_${status}`,
-          status,
-          body,
-          error,
-        );
-      }
-      throw new PrismBotClientError("Unable to reach PRiSM backend.", "API_UNREACHABLE", 0, {}, error);
-    }
+    return body && typeof body === "object" && Object.hasOwn(body, "data") ? body.data : body;
   }
 
+  confirmPlatformBinding(code: string, provider: string, subject: string) {
+    return this.request("POST", "/rpc/integration/platform-binding/confirm", { body: { code, provider, subject } });
+  }
 
   private identityBody(identity: any): Record<string, unknown> {
     return {
@@ -430,19 +556,17 @@ class PrismApiClient {
       ? "/rpc/integration/players/by-identity/register"
       : "/rpc/integration/players/by-identity/resolve";
     const result = await this.request("POST", endpoint, {
-      token: this.config.integrationToken,
       body: this.identityBody(identity),
     });
     return result.player;
   }
 
   async getVersion() {
-    return this.request("GET", "/version", {});
+    return this.request("GET", "version", {});
   }
 
   async startSessionByIdentity(identity: any, body?: any) {
     return this.request("POST", "/rpc/integration/players/by-identity/session/start", {
-      token: this.config.integrationToken,
       body: {
         ...this.identityBody(identity),
         ...(body ?? {}),
@@ -452,7 +576,6 @@ class PrismApiClient {
 
   async stopSessionByIdentity(identity: any, sessionId: string) {
     return this.request("POST", "/rpc/integration/players/by-identity/sessions/:sessionId/stop", {
-      token: this.config.integrationToken,
       params: { sessionId },
       body: this.identityBody(identity),
     });
@@ -460,42 +583,36 @@ class PrismApiClient {
 
   async getWalletByIdentity(identity: any) {
     return this.request("POST", "/rpc/integration/players/by-identity/wallet", {
-      token: this.config.integrationToken,
       body: this.identityBody(identity),
     });
   }
 
   async getAssetsByIdentity(identity: any) {
     return this.request("POST", "/rpc/integration/players/by-identity/assets", {
-      token: this.config.integrationToken,
       body: this.identityBody(identity),
     });
   }
 
   async getSessionHistoryByIdentity(identity: any) {
     return this.request("POST", "/rpc/integration/players/by-identity/history", {
-      token: this.config.integrationToken,
       body: this.identityBody(identity),
     });
   }
 
   async previewCheckoutByIdentity(identity: any) {
     return this.request("POST", "/rpc/integration/players/by-identity/checkout/preview", {
-      token: this.config.integrationToken,
       body: this.identityBody(identity),
     });
   }
 
   async confirmCheckoutByIdentity(identity: any, closeSessionsBeforeBalanceCheck = true) {
     return this.request("POST", "/rpc/integration/players/by-identity/checkout/confirm", {
-      token: this.config.integrationToken,
       body: { ...this.identityBody(identity), closeSessionsBeforeBalanceCheck },
     });
   }
 
   async redeemCodeByIdentity(identity: any, code: string) {
     return this.request("POST", "/rpc/integration/players/by-identity/redeem", {
-      token: this.config.integrationToken,
       body: {
         ...this.identityBody(identity),
         code,
@@ -505,7 +622,6 @@ class PrismApiClient {
 
   async requestDeviceCommandByIdentity(identity: any, command: any, options?: { staffOverride?: boolean }) {
     return this.request("POST", "/rpc/integration/players/by-identity/device-actions", {
-      token: this.config.integrationToken,
       body: {
         ...this.identityBody(identity),
         ...(options?.staffOverride ? { staffOverride: true } : {}),
@@ -520,7 +636,6 @@ class PrismApiClient {
 
   async requestScanByIdentity(identity: any, scan: any) {
     return this.request("POST", "/rpc/integration/players/by-identity/device-actions", {
-      token: this.config.integrationToken,
       body: {
         ...this.identityBody(identity),
         target: {
@@ -539,33 +654,28 @@ class PrismApiClient {
 
   async listActiveSessions() {
     return this.request("GET", "/rpc/integration/sessions/active", {
-      token: this.config.integrationToken,
     });
   }
 
   async listDeviceStates() {
     return this.request("GET", "/rpc/integration/device-states", {
-      token: this.config.integrationToken,
     });
   }
 
   async adjustAssetsByIdentity(identity: any, adjustments: unknown[]) {
     return this.request("POST", "/rpc/integration/players/by-identity/assets/adjustments", {
-      token: this.config.integrationToken,
       body: { ...this.identityBody(identity), adjustments },
     });
   }
 
   async adjustWalletByIdentity(identity: any, amount: number, reason: string) {
     return this.request("POST", "/rpc/integration/players/by-identity/wallet/adjustment", {
-      token: this.config.integrationToken,
       body: { ...this.identityBody(identity), amount, reason },
     });
   }
 
   async checkoutWithOverrideByIdentity(identity: any, total: number, reason: string) {
     return this.request("POST", "/rpc/integration/players/by-identity/checkout/override", {
-      token: this.config.integrationToken,
       body: { ...this.identityBody(identity), total, reason },
     });
   }
@@ -573,45 +683,74 @@ class PrismApiClient {
 
 /* ------------------------------- service ----------------------------------- */
 
+type IdleReminder = { reason: "shop_empty" | "device_idle"; at: number; devices: Array<{ id: string; name: string }> };
+
 class PrismKoishiService {
   private readonly mahjongTables = new Map<string, MahjongTableState>();
   private readonly logoutInFlight = new Map<string, Promise<string>>();
   private readonly client: any;
   private readonly logger?: { warn(...args: unknown[]): void };
 
-  constructor(ctx: KoishiLikeContext, private readonly config: PrismKoishiPluginConfig) {
+  private readonly socket: PrismSocket | null = null;
+
+  constructor(private readonly ctx: KoishiLikeContext, private readonly config: PrismKoishiPluginConfig) {
     this.logger = ctx.logger?.("prism");
     if (config.client) {
       this.client = config.client;
-    } else {
-      if (!config.baseUrl) {
-        throw new Error("PRiSM Koishi plugin requires either 'client' or 'baseUrl' in config.");
-      }
-      if (!config.integrationToken) {
-        throw new Error("PRiSM Koishi plugin requires 'integrationToken' in config when 'client' is not provided.");
-      }
-      const http = (ctx as any).http ?? {
-        async get(url: string, c: any) {
-          const res = await fetch(url, { method: "GET", headers: c.headers });
-          if (!res.ok) throw { response: { data: await res.json(), status: res.status } };
-          return res.json();
-        },
-        async post(url: string, body: any, c: any) {
-          const res = await fetch(url, { method: "POST", headers: c.headers, body: JSON.stringify(body) });
-          if (!res.ok) throw { response: { data: await res.json(), status: res.status } };
-          return res.json();
-        },
-        async put(url: string, body: any, c: any) {
-          const res = await fetch(url, { method: "PUT", headers: c.headers, body: JSON.stringify(body) });
-          if (!res.ok) throw { response: { data: await res.json(), status: res.status } };
-          return res.json();
-        }
-      };
-      this.client = new PrismApiClient(http, {
-        baseUrl: config.baseUrl,
-        shopCode: config.shopCode,
-        integrationToken: config.integrationToken,
-      });
+      return;
+    }
+    if (!config.shopCode || !config.baseUrl || !config.integrationToken) {
+      throw new Error("PRiSM Koishi plugin requires 'shopCode', 'baseUrl' and 'integrationToken'.");
+    }
+    const open: SocketFactory = config.socket ?? ((url, headers) => {
+      const http = (ctx as any).http;
+      if (!http?.ws) throw new Error("Koishi http service with WebSocket support is required.");
+      return http.ws(url, { headers });
+    });
+    const lead = Math.max(0, config.idleReminderMinutes ?? 5);
+    this.socket = new PrismSocket(
+      open,
+      platformSocketUrl(config.baseUrl, config.shopCode),
+      config.integrationToken,
+      // Without anywhere to send it, the platform need not plan a reminder.
+      lead > 0 && (config.idleNotifyChannelIds ?? []).length ? { reminderLeadSeconds: lead * 60 } : {},
+      (event) => {
+        if (event.event === "idle.reminder") void this.remindIdle(event.data as IdleReminder);
+      },
+      this.logger,
+    );
+    this.client = new PrismApiClient(this.socket);
+    this.socket.start();
+  }
+
+  dispose(): void {
+    this.socket?.stop();
+  }
+
+  async bind(sender: Sender, code: string): Promise<string> {
+    try {
+      await this.client.confirmPlatformBinding(code, sender.provider, sender.id);
+      return "绑定成功，请返回网页继续操作";
+    } catch (error) {
+      if (error instanceof PrismBotClientError && error.status > 0) return error.message || "绑定失败，请重新生成验证码";
+      throw error;
+    }
+  }
+
+  /** Tell the configured channels a power-off is coming. Short: they can read a device name. */
+  async remindIdle(reminder: IdleReminder): Promise<void> {
+    const channels = this.config.idleNotifyChannelIds ?? [];
+    if (!channels.length || typeof this.ctx.broadcast !== "function") return;
+    const now = (this.config.now?.() ?? new Date()).getTime();
+    const minutes = Math.max(1, Math.round((reminder.at - now) / 60_000));
+    const names = reminder.devices.map((device) => device.name).join("、");
+    const message = reminder.reason === "shop_empty"
+      ? `店里没人，${minutes} 分钟后全部关机`
+      : `${names} 闲置中，${minutes} 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟`;
+    try {
+      await this.ctx.broadcast(channels, message);
+    } catch (error) {
+      this.logger?.warn("PRiSM idle reminder failed", error);
     }
   }
 
@@ -1076,26 +1215,30 @@ ${table.players.map(player => player.name).join("、")}`),
       .join("\n");
   }
 
-  async autoPowerOffLoop(): Promise<void> {
-    const interval = this.config.powerOffInterval ?? 0;
-    if (interval <= 0) return;
-    const result = (await this.client.listActiveSessions()) as UncheckedRecord;
-    const sessions = (result?.sessions ?? []) as UncheckedRecord[];
-    if (sessions.length > 0) return;
-    const statesResult = (await this.client.listDeviceStates()) as UncheckedRecord;
-    const states = (statesResult?.deviceStates ?? []) as DeviceStateItem[];
-    const anyOn = states.some((d) => normalizeDeviceState(d.state) === "on");
-    if (!anyOn) return;
-    const dummySender: Sender = { id: "system", name: "system", provider: "system" };
-    await this.power(dummySender, "all", "off", true);
+  /** Keep a running device from being switched off as idle; never switches one on. */
+  async keep(sender: Sender, deviceRef: string): Promise<string> {
+    try {
+      const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
+        type: "power.keep",
+        target: { kind: "facility", ref: deviceRef },
+      });
+      if (this.getCommandFailureMessage(result)) {
+        this.logDeviceCommandFailure(result);
+        return `延迟失败，${deviceCommandFailureReason(result)}`;
+      }
+      return `✅ ${result.action.payload.deviceLabel} 已延迟关机`;
+    } catch (error) {
+      this.logCommandError(error);
+      return `延迟失败，${powerFailureReason(error)}`;
+    }
   }
 
   /* ---------------------------- helpers ---------------------------------- */
 
-  private async power(sender: Sender, deviceRef: string, state: string, systemOverride = false): Promise<string> {
+  private async power(sender: Sender, deviceRef: string, state: string): Promise<string> {
     const operation = state === "on" ? "启动" : "关闭";
-    const staffOverride = systemOverride || (state === "off" && this.config.powerCommandsAdminOnly === true);
-    if (!systemOverride && staffOverride && !matchesPlatformIdentity(this.config.staffUserIds ?? [],sender)) {
+    const staffOverride = state === "off" && this.config.powerCommandsAdminOnly === true;
+    if (staffOverride && !matchesPlatformIdentity(this.config.staffUserIds ?? [],sender)) {
       return `${operation}失败，权限不足`;
     }
     try {
@@ -1504,7 +1647,8 @@ export function humanReadableBotError(error: PrismBotClientError): string {
   if (error.code === "INSUFFICIENT_BALANCE") {
     return "余额不足，暂时不能结账。请先充值，或由店员在后台改价后再结账。";
   }
-  if (error.code === "API_UNREACHABLE" || error.code === "NETWORK_ERROR" || error.code === "HTTP_0") {
+  if (error.code === "API_UNREACHABLE") return "操作失败，暂时连不上服务器。";
+  if (error.code === "NETWORK_ERROR" || error.code === "HTTP_0") {
     return genericCommandFailure();
   }
   if (error.code === "API_TIMEOUT") {

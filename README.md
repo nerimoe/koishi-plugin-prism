@@ -22,7 +22,7 @@
 | 配置项 | 类型 | 默认值 | 描述 |
 | :--- | :---: | :---: | :--- |
 | `baseUrl` | `string` | - | **必填**。PRiSM Next Server 的访问基准 URL（如 `https://prism-mmw.neri.moe`）。 |
-| `shopCode` | `string` | - | 统一平台的店铺公开编号；单店兼容部署留空。 |
+| `shopCode` | `string` | - | **必填**。统一平台的店铺公开编号。 |
 | `integrationToken` | `string` | - | **必填**。从 PRiSM 网页后台生成的 Integration API 令牌。 |
 | `autoRegister` | `boolean` | `true` | 当玩家未注册时，是否在首次操作（如入场/查钱包）时自动在 PRiSM 中创建新玩家。 |
 | `loginPricingConfigIds` | `string[]` | `[]` | 默认入场计费规则 ID 列表。 |
@@ -37,11 +37,13 @@
 | `playerCommands` | `"all" \| "readonly"` | `"all"` | 玩家可用的命令。`readonly` 时玩家只能绑定身份（`bind`）、查询（`wallet`、`billing`、`history`、`items`、`list`、`show`、`麻将列表`、`versions`、`api测速`）和兑换（`redeem`）；入场、结账、上下桌和设备操作（`login`/`入场`、`logout`、`mahjong`/`上桌`/`下桌`、`lock`、`on`、`off`、`coin`、`scan`）只有 `staffUserIds` 中的管理员能用，包括替其他玩家操作。适合让 Bot 只负责身份绑定与查询、入场结账都在网页或 App Clip 里完成的店。 |
 | `readOnlyNotice` | `string` | `请扫描设备上的二维码或碰 NFC，在网页或 App Clip 里操作` | 只读模式下玩家使用受限命令时 Bot 的回复。 |
 | `logoutNotifyUserIds` | `string[]` | `[]` | 结账成功后额外私聊完整账单的平台身份。通知收件人为该列表与 `staffUserIds` 的去重并集。 |
+| `idleNotifyChannelIds` | `string[]` | `[]` | 闲置自动关机的提醒发到哪里。群写 `onebot:群号`，私聊写 `onebot:private:QQ号`（Koishi 的 `平台:频道` 格式）。留空则不提醒。 |
+| `idleReminderMinutes` | `number` | `5` | 自动关机前几分钟提醒，0 为不提醒。 |
 | `mahjongTableConfigs` | `object[]` | `[]` | 推荐的结构化麻将桌列表。每项填写显示名称、命令别名列表与计费方案 ID 列表。显示名称同时作为内部桌位锚点与 session 标签。 |
 
 ### 统一平台
 
-配置 `baseUrl`、`shopCode` 和本店的 Integration 令牌后，插件调用 `/api/v1/shops/:shopCode/integration`；单店兼容部署调用 `/api/v1/integration`。
+配置 `baseUrl`、`shopCode` 和本店的 Integration 令牌后，插件与 PRiSM 只保持**一条 WebSocket 连接**（`/api/v1/shops/:shopCode/integration/ws`），所有命令都作为请求帧走这条连接，平台也通过它推送闲置关机提醒。连接断开时命令直接回复「操作失败，暂时连不上服务器。」，不排队、不自动重发；插件在后台自动重连。需要 Koishi 的 `http` 服务（`ctx.http.ws`）。不再支持不填 `shopCode` 的单店兼容部署。
 
 玩家在网页取得验证码后，向任意已接入的店铺 Bot 发送 `bind 验证码`（旧命令 `prism.bind` 仍可用）。店家可以在 PRiSM「设置 → Bot 与接入」改写玩家看到的绑定提示。所有命令从消息的 `session.platform` 和 `session.userId` 读取身份，发送 `{ code, provider, subject }`，不接受手填或代填身份；`provider` 配置已移除。例如同一实例的 OneBot 和 Telegram 消息分别使用 `onebot:114514` 和 `telegram:114514`。群／私聊过滤交给 Koishi。网页账号可以跨店使用，平台验证、玩家和余额按店铺隔离；同一网页账号追加平台绑定时复用同一个玩家。
 
@@ -86,6 +88,7 @@ pricingConfigIds: [pricing-mahjong-a]
 * `lock` - 为默认 TTLock 门锁生成一个 8 位随机临时密码（有效期 3 分钟）并回复密码。
 * `on <deviceRef>` - 使用后台设备名称、别名或 `all` 请求启动电源；仅已通过 `login`/`入场` 开启活跃计费 session 的玩家可用。不接受 Home Assistant entity ID，成功回复使用后端返回的设备名称。
 * `off <deviceRef>` - 使用后台设备名称、别名或 `all` 请求关闭电源；与 `/on` 一样仅允许已入场玩家使用，不接受 Home Assistant entity ID，`all` 显示为“所有设备”。
+* `keep <设备名或别名>` - 延迟闲置设备的自动关机。只对开着的设备有效，永远不会把设备开起来；需要玩家已入场。只读模式（`readonly`）下玩家也能用。
 * `coin <设备名或别名> [count]` - 请求向后台配置的 Hinata IO 设备投币；需要玩家已入场。
 * `scan <设备名或别名>` - 使用当前玩家后台绑定的 Aime 卡向设备刷卡，不在群聊中输入或显示卡号。
 * `redeem <code>` - 兑换礼物码。
@@ -151,6 +154,10 @@ git push origin main --follow-tags
 ### 0.1.39
 
 支持统一平台店铺 API、平台身份 绑定和麻将查人统计；兼容新版入场标签，修复已入场玩家无法通过 Bot 上桌的问题。
+
+### 0.2.0
+
+与 PRiSM 改为一条 WebSocket 连接通信，不再发 HTTP 请求；连接断开时命令直接失败。移除单店兼容模式（`shopCode` 必填）和插件自己的无人自动关机（`powerOffInterval`），改由 PRiSM 后台的「闲置自动关机」负责；新增 `idleNotifyChannelIds`、`idleReminderMinutes` 接收关机提醒，以及 `keep` 命令延迟关机。需要配套支持 `/integration/ws` 的 PRiSM。
 
 ### 0.1.41
 
