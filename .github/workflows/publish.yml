@@ -1,13 +1,21 @@
 name: Publish to npm
 
+# A merge to main publishes when package.json carries a version npm does not
+# have yet, then tags it. Pushing a v*.*.* tag or running it by hand works too.
 on:
   push:
+    branches: [main]
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -25,13 +33,37 @@ jobs:
         with:
           bun-version: 1.3.14
 
-      - run: bun install --frozen-lockfile
-
-      - name: Check release tag
+      - name: Decide whether this version is new
+        id: release
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
+          name="$(node -p "require('./package.json').name")"
           version="$(node -p "require('./package.json').version")"
-          test "${RELEASE_TAG#v}" = "$version"
+          if [ -n "$RELEASE_TAG" ] && [ "${RELEASE_TAG#v}" != "$version" ]; then
+            echo "Tag $RELEASE_TAG does not match package.json $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already on npm; nothing to publish."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
 
-      - run: npm publish --access public
+      - if: steps.release.outputs.publish == 'true'
+        run: bun install --frozen-lockfile
+
+      # prepublishOnly runs the typecheck, the tests and the build first.
+      - if: steps.release.outputs.publish == 'true'
+        run: npm publish --access public
+
+      - name: Tag the release
+        if: steps.release.outputs.publish == 'true' && github.ref_type != 'tag'
+        env:
+          TAG: v${{ steps.release.outputs.version }}
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then exit 0; fi
+          git tag "$TAG"
+          git push origin "$TAG"

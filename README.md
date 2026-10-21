@@ -127,16 +127,17 @@ Bot 版本直接读取本 npm 包的 `package.json`，后端版本读取无需�
 
 ### 提交检查
 
-`main` 和 PR 均运行独立的 GitHub Actions `checks`：Bun 类型检查、Bot 命令回归测试与 TypeScript 编译。麻将上桌/下桌与多平台退场去重使用模拟适配器测试，不对线上店铺写入。代码合并后仍需发布新 npm 版本，并确认运行中的 Koishi 实例已经升级；只有合并源码不会自动更新 Bot。
+`main` 和 PR 均运行独立的 GitHub Actions `checks`：Bun 类型检查、Bot 命令回归测试与 TypeScript 编译。麻将上桌/下桌与多平台退场去重使用模拟适配器测试，不对线上店铺写入。发布新 npm 版本后，还要确认运行中的 Koishi 实例已经升级。
 
 ### CI 自动发布
 
-发布使用 GitHub Actions 的 npm Trusted Publishing。修改版本后推送带 `v` 前缀且与 `package.json` 一致的标签即可自动测试、构建并发布：
+发布使用 GitHub Actions 的 npm Trusted Publishing。合并到 `main` 时，如果 `package.json` 的版本在 npm 上还不存在，就自动测试、构建、发布，并打上 `v<版本>` 标签；版本没变则跳过。所以发版只需在 PR 里改版本号：
 
 ```bash
-npm version patch
-git push origin main --follow-tags
+npm version minor --no-git-tag-version
 ```
+
+也可以推送与 `package.json` 一致的 `v` 标签，或在 Actions 里手动运行 `Publish to npm`。
 
 首次使用前，在 npm 包设置的 Trusted Publisher 中选择 GitHub Actions，填写仓库 `nerimoe/koishi-plugin-prism` 和工作流文件名 `publish.yml`，并允许 `npm publish`。
 
