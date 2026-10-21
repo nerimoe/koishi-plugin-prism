@@ -43,6 +43,19 @@ function createDefaultClient() {
   const calls: any[] = [];
   return {
     calls,
+    httpTimings: [{ ms: 812.4, serverMs: 31, colo: "HKG" }, { ms: 205.2, serverMs: 29, colo: "HKG" }],
+    async timeWalletOverHttp(input: unknown) {
+      calls.push(["timeWalletOverHttp", input]);
+      return this.httpTimings.shift() ?? { ms: 210, serverMs: 30, colo: "HKG" };
+    },
+    async timeWalletOverSocket(input: unknown) {
+      calls.push(["timeWalletOverSocket", input]);
+      return { ms: 198.6, serverMs: 27 };
+    },
+    async pingSocket() {
+      calls.push(["pingSocket"]);
+      return 176.2;
+    },
     async getVersion() {
       calls.push(["getVersion"]);
       return { service: "prism-api", version: "1.0.0", revision: "backend123" };
@@ -205,6 +218,49 @@ function createDefaultClient() {
   };
 }
 
+/** A scripted PRiSM end of the bot connection. */
+function fakePlatform(answer: (frame: any) => { status: number; body: unknown } | null | Promise<{ status: number; body: unknown } | null>) {
+  const opened: Array<{ url: string; headers: Record<string, string> }> = [];
+  const frames: any[] = [];
+  let listeners: Record<string, Array<(event: any) => void>> = {};
+  const emit = (type: string, event: any) => { for (const listener of listeners[type] ?? []) listener(event); };
+  const socket = {
+    readyState: 0,
+    addEventListener(type: string, listener: (event: any) => void) { (listeners[type] ??= []).push(listener); },
+    send(data: string) {
+      if (data === "ping") {
+        setTimeout(() => emit("message", { data: "pong" }), 0);
+        return;
+      }
+      const frame = JSON.parse(data);
+      frames.push(frame);
+      if (frame.type !== "request") return;
+      Promise.resolve(answer(frame)).then((reply) => {
+        if (reply) emit("message", { data: JSON.stringify({ type: "response", id: frame.id, ...reply }) });
+      });
+    },
+    close() { socket.readyState = 3; emit("close", {}); },
+  };
+  const factory = (url: string, headers: Record<string, string>) => {
+    opened.push({ url, headers });
+    listeners = {};
+    socket.readyState = 0;
+    queueMicrotask(() => { socket.readyState = 1; emit("open", {}); });
+    return socket;
+  };
+  return {
+    factory,
+    opened,
+    frames,
+    requests: () => frames.filter((frame) => frame.type === "request"),
+    push(event: string, data: unknown) { emit("message", { data: JSON.stringify({ type: "event", event, data }) }); },
+    connected: () => new Promise((resolve) => setTimeout(resolve, 0)),
+  };
+}
+
+const connection = { shopCode: "shop-a", baseUrl: "https://prism.test", integrationToken: "test-token" };
+const basics = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮" };
+
 describe("applyPrismKoishiPlugin", () => {
   it("reports an inactive player with the standard failure wording", () => {
     expect(humanReadableBotError(new PrismBotClientError(
@@ -215,70 +271,27 @@ describe("applyPrismKoishiPlugin", () => {
     ))).toBe("操作失败，玩家未入场");
   });
 
-  it("never exposes fetch URLs or raw network errors to chat", async () => {
+  it("says the server cannot be reached without exposing addresses or raw errors", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const warnings: unknown[][] = [];
-    const ctx = createLoggedMockKoishiContext(registered, warnings) as ReturnType<typeof createLoggedMockKoishiContext> & {
-      http: { post(): Promise<never> };
-    };
-    const originalError = new TypeError(
-      "fetch https://prism-mmw2.neri.moe/rpc/integration/players/by-identity/wallet failed",
-    );
-    ctx.http = {
-      async post() {
-        throw originalError;
-      },
-    };
-    applyPrismKoishiPlugin(ctx, {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      baseUrl: "https://prism-mmw2.neri.moe",
-      integrationToken: "integration-token",
+    applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, warnings), {
+      ...basics, ...connection,
+      socket: () => { throw new TypeError("connect wss://prism.test/api/v1/shops/shop-a/integration/ws failed"); },
     });
-
-    const result = await registered.get("wallet [target:user]")?.action({
-      session: { userId: "player-1" },
-    });
-
-    expect(result).toBe("操作失败，请稍后再试。");
-    expect(result).not.toContain("https://");
-    expect(result).not.toContain("fetch");
-    expect(warnings).toEqual([["PRiSM Bot command failed", originalError]]);
+    const result = await registered.get("wallet [target:user]")?.action({ session: { userId: "player-1" } });
+    expect(result).toBe("操作失败，暂时连不上服务器。");
+    expect(result).not.toContain("wss://");
+    expect(warnings.some(([message]) => message === "PRiSM connection failed")).toBe(true);
   });
 
-  it("renders HTTP failures in Chinese without exposing English status text", async () => {
+  it("renders failures in Chinese without exposing English status text", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const warnings: unknown[][] = [];
-    const ctx = createLoggedMockKoishiContext(registered, warnings) as ReturnType<typeof createLoggedMockKoishiContext> & {
-      http: { post(): Promise<never> };
-    };
-    const originalError = {
-      message: "NOT FOUND",
-      response: { status: 404, data: "NOT FOUND" },
-    };
-    ctx.http = {
-      async post() {
-        throw originalError;
-      },
-    };
-    applyPrismKoishiPlugin(ctx, {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      baseUrl: "https://prism-mmw2.neri.moe",
-      integrationToken: "integration-token",
-    });
-
-    const result = await registered.get("wallet [target:user]")?.action({
-      session: { userId: "player-1" },
-    });
-
+    const platform = fakePlatform(() => ({ status: 404, body: "NOT FOUND" }));
+    applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, []), { ...basics, ...connection, socket: platform.factory });
+    await platform.connected();
+    const result = await registered.get("wallet [target:user]")?.action({ session: { userId: "player-1" } });
     expect(result).toBe("操作失败，请稍后再试。");
     expect(result).not.toContain("NOT FOUND");
-    expect(warnings).toEqual([["PRiSM Bot command failed", originalError]]);
   });
 
   it("does not expose unknown backend error messages", () => {
@@ -326,6 +339,7 @@ describe("applyPrismKoishiPlugin", () => {
       "billing [target:user]",
       "wallet [target:user]",
       "api测速 [count:number]",
+      "ws测速 [count:number]",
       "versions",
       "items [target:user]",
       "list",
@@ -334,6 +348,7 @@ describe("applyPrismKoishiPlugin", () => {
       "lock",
       "on <deviceRef>",
       "off <deviceRef>",
+      "keep <deviceRef>",
       "coin <deviceRef> [count]",
       "scan <deviceRef>",
       "redeem <code>",
@@ -375,7 +390,10 @@ describe("applyPrismKoishiPlugin", () => {
     expect(listResult).toContain("Player 296");
 
     const benchmark = await registered.get("api测速 [count:number]")?.action({ session: { userId: "123456" } }, "2");
-    expect(benchmark).toContain("PRiSM API 测速（钱包查询，2 次）");
+    expect(benchmark).toBe("📡 API 测速（HTTP，钱包查询 2 次）\n首次：812 ms（含建立连接）\n之后：最小 205 / 平均 205 / 最大 205 ms\n服务端处理：平均 30 ms\n节点：HKG");
+    const wsBenchmark = await registered.get("ws测速 [count:number]")?.action({ session: { userId: "123456" } }, "2");
+    expect(wsBenchmark).toBe("📡 WS 测速（2 次）\n心跳：最小 176 / 平均 176 / 最大 176 ms\n钱包查询：最小 199 / 平均 199 / 最大 199 ms\n服务端处理：平均 27 ms");
+    await expect(registered.get("ws测速 [count:number]")!.action({ session: { userId: "123456" } }, "11")).resolves.toBe("次数须为 1 到 10 的整数。");
 
     await expect(registered.get("versions")?.action({ session: { userId: "123456" } })).resolves.toBe(
       `PRiSM 版本信息\nBot：${version}\n后端：1.0.0 (backend123)`,
@@ -401,32 +419,14 @@ describe("applyPrismKoishiPlugin", () => {
     );
   });
 
-  it("loads backend version from the public endpoint without an API token", async () => {
+  it("asks the platform for its version over the connection", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    let request: { url: string; config: any } | undefined;
-    const ctx = {
-      ...createMockKoishiContext(registered),
-      http: {
-        async get(url: string, config: any) {
-          request = { url, config };
-          return { service: "prism-api", version: "1.0.0", revision: "abc123" };
-        },
-      },
-    };
-    applyPrismKoishiPlugin(ctx, {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      baseUrl: "https://prism.example/",
-      integrationToken: "secret-token",
-    });
-
-    await expect(registered.get("versions")?.action({ session: { userId: "123456" } })).resolves.toContain(
-      "后端：1.0.0 (abc123)",
-    );
-    expect(request?.url).toBe("https://prism.example/version");
-    expect(request?.config.headers.Authorization).toBeUndefined();
+    const platform = fakePlatform((frame) => frame.path === "version"
+      ? { status: 200, body: { service: "prism-api", version: "1.0.0", revision: "abc123" } }
+      : null);
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...basics, ...connection, socket: platform.factory });
+    await platform.connected();
+    await expect(registered.get("versions")?.action({ session: { userId: "123456" } })).resolves.toContain("后端：1.0.0 (abc123)");
   });
 
   it("quotes command replies and notifies configured logout recipients", async () => {
@@ -1872,112 +1872,125 @@ describe("applyPrismKoishiPlugin", () => {
 });
 
 
-it("sends real Koishi HTTP envelopes for entry, Mahjong seat and leave", async () => {
+it("sends every command as a request over one authenticated connection", async () => {
   const registered = new Map<string, RegisteredCommand>();
-  const calls: Array<{ method: string; path: string; body?: any; token?: string }> = [];
   const sessions = [{ id: "entry-1", playerId: "player-1", label: "entry" }];
-  const respond = (value: unknown) => ({ data: value });
-  const mockHttp = {
-    get: async (url: string, options: any) => {
-      const path = new URL(url).pathname;
-      calls.push({ method: "GET", path, token: options.headers.Authorization });
-      if (path.endsWith("/sessions/active")) return respond({ sessions: [...sessions] });
-      throw new Error(`Unmatched GET ${path}`);
-    },
-    post: async (url: string, body: any, options: any) => {
-      const path = new URL(url).pathname;
-      calls.push({ method: "POST", path, body, token: options.headers.Authorization });
-      if (path.endsWith("/players/by-identity/register"))
-        return respond({ player: { id: "player-1", displayName: "Test player", status: "active" } });
-      if (path.endsWith("/players/by-identity/session/start")) {
-        if (body.entry === true) return respond({ session: { id: "entry-1", playerId: "player-1" } });
-        if (body.entry === false) {
-          sessions.push({ id: "table-1", playerId: "player-1", label: "麻将 A 桌" });
-          return respond({ session: { id: "table-1", playerId: "player-1" } });
-        }
-      }
-      if (path.endsWith("/players/by-identity/sessions/table-1/stop")) {
-        sessions.splice(sessions.findIndex(row => row.id === "table-1"), 1);
-        return respond({ session: { id: "table-1", status: "closed" } });
-      }
-      throw new Error(`Unmatched POST ${path}`);
-    },
-  };
-  const ctx = { ...createMockKoishiContext(registered), http: mockHttp };
-  applyPrismKoishiPlugin(ctx, {
-    baseUrl: "https://prism.invalid",
-    shopCode: "audit",
-    integrationToken: "fake-integration-token",
-    autoRegister: true,
-    loginSessionLabel: "音游区间",
-    defaultDoorDeviceId: "door",
-    defaultScanProvider: "aime",
-    currencyName: "积分",
-    mahjongTableSize: 1,
-    mahjongTableConfigs: [
-      { displayName: "麻将 A 桌", aliases: ["a"], pricingConfigIds: ["pricing-a"] },
-    ],
+  const ok = (value: unknown) => ({ status: 200, body: { data: value } });
+  const platform = fakePlatform((frame) => {
+    if (frame.path.endsWith("/sessions/active")) return ok({ sessions: [...sessions] });
+    if (frame.path.endsWith("/players/by-identity/register"))
+      return ok({ player: { id: "player-1", displayName: "Test player", status: "active" } });
+    if (frame.path.endsWith("/players/by-identity/session/start")) {
+      if (frame.body.entry === true) return ok({ session: { id: "entry-1", playerId: "player-1" } });
+      sessions.push({ id: "table-1", playerId: "player-1", label: "麻将 A 桌" });
+      return ok({ session: { id: "table-1", playerId: "player-1" } });
+    }
+    if (frame.path.endsWith("/players/by-identity/sessions/table-1/stop")) {
+      sessions.splice(sessions.findIndex(row => row.id === "table-1"), 1);
+      return ok({ session: { id: "table-1", status: "closed" } });
+    }
+    return { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } };
   });
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+    baseUrl: "https://prism.invalid/", shopCode: "audit", integrationToken: "fake-integration-token",
+    autoRegister: true, loginSessionLabel: "音游区间", defaultDoorDeviceId: "door", defaultScanProvider: "aime",
+    currencyName: "积分", mahjongTableSize: 1,
+    mahjongTableConfigs: [{ displayName: "麻将 A 桌", aliases: ["a"], pricingConfigIds: ["pricing-a"] }],
+    socket: platform.factory,
+  });
+  await platform.connected();
+  expect(platform.opened).toEqual([{
+    url: "wss://prism.invalid/api/v1/shops/audit/integration/ws",
+    headers: { Authorization: "Bearer fake-integration-token" },
+  }]);
   const sender = { session: { platform: "onebot", userId: "1234" } };
   expect(await registered.get("login [target:user]")!.action(sender)).toContain("入场成功");
   expect(await registered.get("上桌 [tableId]")!.action(sender, "a")).toContain("麻将计费已开始");
   expect(await registered.get("下桌")!.action(sender)).toContain("麻将计费已停止");
-  const starts = calls.filter(call => call.path.endsWith("/session/start"));
-  expect(starts).toHaveLength(2);
-  expect(starts.map(call => call.body.entry)).toEqual([true, false]);
-  expect(starts.map(call => call.body.label)).toEqual(["音游区间", "麻将 A 桌"]);
-  for (const call of calls) {
-    expect(call.path.startsWith("/api/v1/shops/audit/integration/")).toBe(true);
-    expect(call.token).toBe("Bearer fake-integration-token");
-    if (call.method === "POST") expect(call.body.identity).toMatchObject({
-      provider: "onebot", subject: "1234",
-    });
+  const starts = platform.requests().filter(frame => frame.path.endsWith("/session/start"));
+  expect(starts.map(frame => frame.body.entry)).toEqual([true, false]);
+  expect(starts.map(frame => frame.body.label)).toEqual(["音游区间", "麻将 A 桌"]);
+  for (const frame of platform.requests()) {
+    expect(frame.path.startsWith("integration/")).toBe(true);
+    expect(typeof frame.id).toBe("string");
+    if (frame.method === "POST") expect(frame.body.identity).toMatchObject({ provider: "onebot", subject: "1234" });
   }
-  expect(calls.filter(call => call.path.endsWith("/sessions/table-1/stop"))).toHaveLength(1);
+  // Every request has its own id, so a resend is recognised as the same request.
+  expect(new Set(platform.requests().map(frame => frame.id)).size).toBe(platform.requests().length);
   expect(sessions).toEqual([{ id: "entry-1", playerId: "player-1", label: "entry" }]);
+});
+
+it("times the same wallet query over HTTP and over the connection", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  const platform = fakePlatform((frame) => frame.path === "integration/players/by-identity/wallet"
+    ? { status: 200, body: { data: { wallet: [] } }, serverMs: 12 } as any
+    : { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } });
+  const posts: any[] = [];
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+    ...basics, ...connection, socket: platform.factory,
+    httpPost: async (url, headers, body) => {
+      posts.push({ url, headers, body });
+      return { status: 200, headers: new Headers({ "x-response-time": "9ms", "cf-ray": "8f00aa-NRT" }), data: { data: { wallet: [] } } };
+    },
+  });
+  await platform.connected();
+  const sender = { session: { userId: "42" } };
+  const api = await registered.get("api测速 [count:number]")!.action(sender, "2");
+  expect(api).toContain("首次：");
+  expect(api).toContain("服务端处理：平均 9 ms");
+  expect(api).toContain("节点：NRT");
+  expect(posts).toHaveLength(2);
+  expect(posts[0]).toMatchObject({
+    url: "https://prism.test/api/v1/shops/shop-a/integration/players/by-identity/wallet",
+    headers: { authorization: "Bearer test-token" },
+    body: { identity: { provider: "onebot", subject: "42" } },
+  });
+  const ws = await registered.get("ws测速 [count:number]")!.action(sender, "3");
+  expect(ws).toContain("心跳：最小 ");
+  expect(ws).toContain("服务端处理：平均 12 ms");
+  expect(platform.requests().filter((frame) => frame.path === "integration/players/by-identity/wallet")).toHaveLength(3);
+  // A refused query is reported, not timed.
+  const refused = fakePlatform(() => ({ status: 403, body: { error: { code: "PLAYER_DISABLED", message: "玩家已停用" } } }));
+  const other = new Map<string, RegisteredCommand>();
+  applyPrismKoishiPlugin(createMockKoishiContext(other), { ...basics, ...connection, socket: refused.factory });
+  await refused.connected();
+  expect(await other.get("ws测速 [count:number]")!.action(sender, "1")).not.toContain("钱包查询：");
 });
 
 it("binds each actual adapter sender without configuration overrides or channel restrictions", async () => {
   const registered = new Map<string, RegisteredCommand>();
-  applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-    shopCode: "shop-a",baseUrl: "https://prism.test",integrationToken: "test-token",
-    autoRegister:true,defaultDoorDeviceId:"front-door",defaultScanProvider:"aime",currencyName:"猫粮",
-  });
-  const calls: any[] = [];
-  const original = globalThis.fetch;
-  globalThis.fetch = (async (url,init) => {
-    calls.push({ url:String(url),body:JSON.parse(String(init?.body)) });
-    return Response.json({data:{playerId:"p"}});
-  }) as typeof fetch;
-  try {
-    const command = registered.get("bind <code:string>")!;
-    expect(await command.action({session:{platform:undefined,userId:"123456"}},"ABCD2345")).toContain("无法获取");
-    expect(registered.get("prism.bind <code:string>")!.action).toBeDefined();
-    for (const platform of ["onebot","telegram","discord"]) for (const isDirect of [false,true]) {
-      expect(await command.action({session:{platform,userId:"114514",senderId:"forged",isDirect}},"ABCD2345")).toContain("绑定成功");
-    }
-    expect(calls).toEqual(["onebot","telegram","discord"].flatMap(provider=>Array(2).fill({
-      url:"https://prism.test/api/v1/shops/shop-a/integration/platform-binding/confirm",
-      body:{code:"ABCD2345",provider,subject:"114514"},
-    })));
-  } finally { globalThis.fetch=original; }
+  const platform = fakePlatform(() => ({ status: 200, body: { data: { playerId: "p" } } }));
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...basics, ...connection, socket: platform.factory });
+  await platform.connected();
+  const command = registered.get("bind <code:string>")!;
+  expect(await command.action({session:{platform:undefined,userId:"123456"}},"ABCD2345")).toContain("无法获取");
+  expect(registered.get("prism.bind <code:string>")!.action).toBeDefined();
+  for (const platformName of ["onebot","telegram","discord"]) for (const isDirect of [false,true]) {
+    expect(await command.action({session:{platform:platformName,userId:"114514",senderId:"forged",isDirect}},"ABCD2345")).toContain("绑定成功");
+  }
+  expect(platform.requests().map(frame => [frame.path, frame.body])).toEqual(["onebot","telegram","discord"].flatMap(provider=>Array(2).fill([
+    "integration/platform-binding/confirm", {code:"ABCD2345",provider,subject:"114514"},
+  ])));
+});
+
+it("reports a rejected binding code with the platform's message", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  const platform = fakePlatform(() => ({ status: 409, body: { error: { code: "BINDING_CODE_EXPIRED", message: "验证码已过期" } } }));
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...basics, ...connection, socket: platform.factory });
+  await platform.connected();
+  expect(await registered.get("bind <code:string>")!.action({ session: { platform: "onebot", userId: "1" } }, "X")).toContain("验证码已过期");
 });
 
 it("uses shop-scoped v1 roster and includes persistent Mahjong waiting seats", async () => {
   const registered = new Map<string, RegisteredCommand>();
-  const calls: string[] = [];
   let sessions: any[] = [];
-  const context = {
-    ...createMockKoishiContext(registered),
-    http: { get: async (url:string, config:any) => {
-      calls.push(url);
-      expect(config.headers.Authorization).toBe("Bearer test-token");
-      return {data:{sessions,mahjongTables:[{id:"table",name:"麻将 A",capacity:4,players:[{id:"p",name:"等待玩家"}]}]}};
-    } },
-  };
-  applyPrismKoishiPlugin(context, {shopCode:"shop-a",baseUrl:"https://prism.test",integrationToken:"test-token"});
+  const platform = fakePlatform(() => ({ status: 200, body: { data: {
+    sessions, mahjongTables: [{ id: "table", name: "麻将 A", capacity: 4, players: [{ id: "p", name: "等待玩家" }] }],
+  } } }));
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...connection, socket: platform.factory } as PrismKoishiPluginConfig);
+  await platform.connected();
   const result = await registered.get("list")!.action({session:{userId:"123456"}});
-  expect(calls).toEqual(["https://prism.test/api/v1/shops/shop-a/integration/sessions/active"]);
+  expect(platform.requests().map(frame => [frame.method, frame.path])).toEqual([["GET", "integration/sessions/active"]]);
   expect(result).toContain("麻将 A（1/4）");
   expect(result).toContain("等待玩家");
   expect(result).toContain("[总计 1 人]");
@@ -1989,6 +2002,62 @@ it("uses shop-scoped v1 roster and includes persistent Mahjong waiting seats", a
   const mixed = await registered.get("list")!.action({session:{userId:"123456"}});
   expect(mixed).toContain("[总计 2 人]");
   expect(mixed.match(/等待玩家/g)).toHaveLength(1);
+});
+
+it("announces idle power-offs where the staff asked, as early as they asked", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  const broadcasts: Array<[string[], string]> = [];
+  const platform = fakePlatform(() => null);
+  const now = new Date("2026-10-21T12:00:00Z");
+  applyPrismKoishiPlugin({
+    ...createMockKoishiContext(registered),
+    async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
+  }, {
+    ...basics, ...connection, socket: platform.factory, now: () => now,
+    idleNotifyChannelIds: ["onebot:123456789"], idleReminderMinutes: 5,
+  });
+  await platform.connected();
+  expect(platform.frames[0]).toEqual({ type: "hello", reminderLeadSeconds: 300 });
+  platform.push("idle.reminder", { reason: "device_idle", at: now.getTime() + 5 * 60_000, devices: [{ id: "m1", name: "舞萌" }, { id: "m2", name: "中二" }] });
+  platform.push("idle.reminder", { reason: "shop_empty", at: now.getTime() + 4 * 60_000, devices: [{ id: "m1", name: "舞萌" }] });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(broadcasts).toEqual([
+    [["onebot:123456789"], "舞萌、中二 闲置中，5 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟"],
+    [["onebot:123456789"], "店里没人，4 分钟后全部关机"],
+  ]);
+});
+
+it("asks for no reminders when there is nowhere to send them", async () => {
+  const platform = fakePlatform(() => null);
+  applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: platform.factory, idleReminderMinutes: 5 });
+  await platform.connected();
+  expect(platform.frames[0]).toEqual({ type: "hello" });
+});
+
+it("lets an entered player keep a device on, even in read-only mode", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  const platform = fakePlatform((frame) => frame.body?.action?.type === "power.keep"
+    ? { status: 200, body: { data: { action: { status: "succeeded", payload: { deviceLabel: "舞萌" } } } } }
+    : null);
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+    ...basics, ...connection, socket: platform.factory, playerCommands: "readonly", readOnlyNotice: "请扫码操作",
+  });
+  await platform.connected();
+  expect(await registered.get("keep <deviceRef>")!.action({ session: { platform: "onebot", userId: "1" } }, "舞萌")).toContain("舞萌 已延迟关机");
+  const [frame] = platform.requests();
+  expect(frame.path).toBe("integration/players/by-identity/device-actions");
+  expect(frame.body.action).toEqual({ type: "power.keep" });
+  expect(frame.body.target).toEqual({ kind: "facility", ref: "舞萌" });
+});
+
+it("fails a command at once while the connection is down, instead of queueing it", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  const sent: string[] = [];
+  // A connection that never opens, as while the platform is unreachable.
+  const socket = { readyState: 0, addEventListener() {}, send(data: string) { sent.push(data); }, close() {} };
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...basics, ...connection, socket: () => socket });
+  expect(await registered.get("wallet [target:user]")!.action({ session: { userId: "1" } })).toBe("操作失败，暂时连不上服务器。");
+  expect(sent).toEqual([]);
 });
 
 it("uses the message adapter for every billing identity and scopes staff privileges across platforms",async()=>{
