@@ -99,7 +99,15 @@ export type PrismKoishiPluginConfig = {
   client?: any;
   /** Opens the platform connection; defaults to Koishi's `ctx.http.ws`. Mainly for tests. */
   socket?: SocketFactory;
+  /** Plain HTTP POST, used only by `api测速`; defaults to Koishi's `ctx.http`. Mainly for tests. */
+  httpPost?: HttpPost;
 };
+
+/** A plain HTTP POST answering with its status, headers and decoded body. */
+export type HttpPost = (url: string, headers: Record<string, string>, body: unknown) => Promise<{ status: number; headers: Headers; data: any }>;
+
+/** One timed call: the whole round trip, the server's own share when it says, and the Cloudflare edge it went through. */
+export type Timing = { ms: number; serverMs: number | null; colo?: string | null };
 
 /** The parts of a WebSocket the plugin uses; both `ws` and browser sockets fit. */
 export type SocketLike = {
@@ -152,6 +160,7 @@ const USAGE: Record<string, string> = {
   mahjong_leave: "/下桌",
   mahjong_list: "/麻将列表",
   api_benchmark: "/api测速 [次数]",
+  ws_benchmark: "/ws测速 [次数]",
   prism_on: "/prism on <设备名|别名|all>",
   prism_off: "/prism off <设备名|别名|all>",
   prism_keep: "/keep <设备名或别名>",
@@ -277,8 +286,12 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.withTarget(await service.sender(context), target, (sender) => service.wallet(sender), context.session?.bot),
   ));
 
-  ctx.command("api测速 [count:number]", "测试 Bot 到 PRiSM API 的钱包查询延迟").action(wrap(async (context, count) =>
+  ctx.command("api测速 [count:number]", "测试 Bot 走 HTTP 到 PRiSM 的延迟").action(wrap(async (context, count) =>
     service.benchmarkApi(await service.sender(context), count),
+  ));
+
+  ctx.command("ws测速 [count:number]", "测试 Bot 走 WebSocket 到 PRiSM 的延迟").action(wrap(async (context, count) =>
+    service.benchmarkWs(await service.sender(context), count),
   ));
 
   ctx.command("versions", "查看 Bot 与 PRiSM 后端版本").action(wrap(async () =>
@@ -366,13 +379,14 @@ type PlatformEvent = { event: string; data: unknown };
  */
 export class PrismSocket {
   private socket: SocketLike | null = null;
-  private readonly pending = new Map<string, { resolve(value: { status: number; body: any }): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
+  private readonly pending = new Map<string, { resolve(value: SocketReply): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
   private retryMs = FIRST_RETRY_MS;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private lastHeard = 0;
   private stopped = false;
   private sequence = 0;
+  private readonly pongWaiters: Array<() => void> = [];
 
   constructor(
     private readonly open: SocketFactory,
@@ -446,7 +460,10 @@ export class PrismSocket {
 
   private receive(raw: string): void {
     this.lastHeard = Date.now();
-    if (raw === "pong") return;
+    if (raw === "pong") {
+      this.pongWaiters.shift()?.();
+      return;
+    }
     let frame: any;
     try {
       frame = JSON.parse(raw);
@@ -458,7 +475,7 @@ export class PrismSocket {
       if (!waiter) return;
       this.pending.delete(frame.id);
       clearTimeout(waiter.timer);
-      waiter.resolve({ status: Number(frame.status) || 500, body: frame.body });
+      waiter.resolve({ status: Number(frame.status) || 500, body: frame.body, serverMs: typeof frame.serverMs === "number" ? frame.serverMs : null });
     } else if (frame?.type === "event" && typeof frame.event === "string") {
       try {
         this.onEvent({ event: frame.event, data: frame.data });
@@ -468,7 +485,27 @@ export class PrismSocket {
     }
   }
 
-  request(frame: { method: "GET" | "POST" | "PUT"; path: string; query?: Record<string, unknown>; body?: unknown }): Promise<{ status: number; body: any }> {
+  /** One heartbeat round trip in milliseconds: the network to the platform and nothing else. */
+  ping(): Promise<number> {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== SOCKET_OPEN) return Promise.reject(unreachable());
+    return new Promise((resolve, reject) => {
+      const startedAt = performance.now();
+      const timer = setTimeout(() => {
+        const index = this.pongWaiters.indexOf(answered);
+        if (index >= 0) this.pongWaiters.splice(index, 1);
+        reject(new PrismBotClientError("服务器没有及时回应", "API_TIMEOUT", 0, {}));
+      }, REQUEST_TIMEOUT_MS);
+      const answered = () => {
+        clearTimeout(timer);
+        resolve(performance.now() - startedAt);
+      };
+      this.pongWaiters.push(answered);
+      socket.send("ping");
+    });
+  }
+
+  request(frame: { method: "GET" | "POST" | "PUT"; path: string; query?: Record<string, unknown>; body?: unknown }): Promise<SocketReply> {
     const socket = this.socket;
     if (!socket || socket.readyState !== SOCKET_OPEN) return Promise.reject(unreachable());
     const id = `${Date.now().toString(36)}-${(this.sequence++).toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -489,8 +526,36 @@ export class PrismSocket {
   }
 }
 
+type SocketReply = { status: number; body: any; serverMs?: number | null };
+
 function unreachable() {
   return new PrismBotClientError("暂时连不上服务器", "API_UNREACHABLE", 0, {});
+}
+
+function replyError(status: number, body: any) {
+  const err = body && typeof body === "object" && typeof body.error === "object" ? body.error : {};
+  return new PrismBotClientError(
+    typeof err.message === "string" ? err.message : `Backend request failed with HTTP ${status}.`,
+    typeof err.code === "string" ? err.code : `HTTP_${status}`,
+    status,
+    body ?? {},
+  );
+}
+
+function benchmarkCount(raw?: string): number | null {
+  const count = raw == null || raw === "" ? 5 : Number(raw);
+  return Number.isInteger(count) && count >= 1 && count <= 10 ? count : null;
+}
+
+function spread(samples: number[]): string {
+  const average = samples.reduce((sum, sample) => sum + sample, 0) / samples.length;
+  return `最小 ${Math.round(Math.min(...samples))} / 平均 ${Math.round(average)} / 最大 ${Math.round(Math.max(...samples))} ms`;
+}
+
+function serverLine(timings: Timing[]): string[] {
+  const known = timings.map((timing) => timing.serverMs).filter((value): value is number => value !== null);
+  if (!known.length) return [];
+  return [`服务端处理：平均 ${Math.round(known.reduce((sum, value) => sum + value, 0) / known.length)} ms`];
 }
 
 /** The platform connection URL for a shop. */
@@ -502,7 +567,10 @@ export function platformSocketUrl(baseUrl: string, shopCode: string): string {
 /* ----------------------------- api client ---------------------------------- */
 
 class PrismApiClient {
-  constructor(private readonly socket: PrismSocket) {}
+  constructor(
+    private readonly socket: PrismSocket,
+    private readonly http?: { post: HttpPost; baseUrl: string; shopCode: string; token: string },
+  ) {}
 
   private async request<T = any>(
     method: "GET" | "POST" | "PUT",
@@ -524,15 +592,7 @@ class PrismApiClient {
       ...(options.query ? { query: options.query } : {}),
       ...(method === "GET" ? {} : { body: options.body ?? {} }),
     });
-    if (status >= 400) {
-      const err = body && typeof body === "object" && typeof body.error === "object" ? body.error : {};
-      throw new PrismBotClientError(
-        typeof err.message === "string" ? err.message : `Backend request failed with HTTP ${status}.`,
-        typeof err.code === "string" ? err.code : `HTTP_${status}`,
-        status,
-        body ?? {},
-      );
-    }
+    if (status >= 400) throw replyError(status, body);
     return body && typeof body === "object" && Object.hasOwn(body, "data") ? body.data : body;
   }
 
@@ -585,6 +645,32 @@ class PrismApiClient {
     return this.request("POST", "/rpc/integration/players/by-identity/wallet", {
       body: this.identityBody(identity),
     });
+  }
+
+  /** The wallet query over the platform connection, timed. */
+  async timeWalletOverSocket(identity: any): Promise<Timing> {
+    const startedAt = performance.now();
+    const reply = await this.socket.request({ method: "POST", path: "integration/players/by-identity/wallet", body: this.identityBody(identity) });
+    const ms = performance.now() - startedAt;
+    if (reply.status >= 400) throw replyError(reply.status, reply.body);
+    return { ms, serverMs: reply.serverMs ?? null };
+  }
+
+  /** The same wallet query as a plain HTTP request, the way the Bot used to call, timed. */
+  async timeWalletOverHttp(identity: any): Promise<Timing> {
+    if (!this.http) throw new PrismBotClientError("HTTP 测速不可用", "HTTP_UNAVAILABLE", 0, {});
+    const { post, baseUrl, shopCode, token } = this.http;
+    const url = `${baseUrl.trim().replace(/\/+$/, "")}/api/v1/shops/${encodeURIComponent(shopCode)}/integration/players/by-identity/wallet`;
+    const startedAt = performance.now();
+    const response = await post(url, { authorization: `Bearer ${token}`, "content-type": "application/json" }, this.identityBody(identity));
+    const ms = performance.now() - startedAt;
+    if (response.status >= 400) throw replyError(response.status, response.data);
+    const server = Number.parseFloat(response.headers.get("x-response-time") ?? "");
+    return { ms, serverMs: Number.isFinite(server) ? server : null, colo: response.headers.get("cf-ray")?.split("-").pop() ?? null };
+  }
+
+  pingSocket(): Promise<number> {
+    return this.socket.ping();
   }
 
   async getAssetsByIdentity(identity: any) {
@@ -719,7 +805,15 @@ class PrismKoishiService {
       },
       this.logger,
     );
-    this.client = new PrismApiClient(this.socket);
+    const post: HttpPost = config.httpPost ?? (async (url, headers, body) => {
+      const http = (ctx as any).http;
+      if (typeof http !== "function") throw new PrismBotClientError("HTTP 测速需要 Koishi 的 http 服务", "HTTP_UNAVAILABLE", 0, {});
+      const response = await http(url, {
+        method: "POST", headers, data: body, keepAlive: true, timeout: REQUEST_TIMEOUT_MS, validateStatus: () => true,
+      });
+      return { status: response.status, headers: response.headers, data: response.data };
+    });
+    this.client = new PrismApiClient(this.socket, { post, baseUrl: config.baseUrl, shopCode: config.shopCode, token: config.integrationToken });
     this.socket.start();
   }
 
@@ -1034,23 +1128,38 @@ class PrismKoishiService {
     return formatWallet(result.wallet as UncheckedRecord[], this.config.currencyName);
   }
 
+  /**
+   * The wallet query over plain HTTP. The first request usually has to open a
+   * connection (DNS, TCP, TLS), so it is reported apart from the reused ones.
+   */
   async benchmarkApi(sender: Sender, rawCount?: string): Promise<string> {
-    const count = rawCount == null || rawCount === "" ? 3 : Number(rawCount);
-    if (!Number.isInteger(count) || count < 1 || count > 10) return "次数须为 1 到 10 的整数。";
-    const samples: number[] = [];
-    for (let index = 0; index < count; index++) {
-      const startedAt = performance.now();
-      await this.client.getWalletByIdentity(this.identity(sender));
-      samples.push(performance.now() - startedAt);
-    }
-    const min = Math.min(...samples);
-    const max = Math.max(...samples);
-    const average = samples.reduce((sum, sample) => sum + sample, 0) / samples.length;
+    const count = benchmarkCount(rawCount);
+    if (count === null) return "次数须为 1 到 10 的整数。";
+    const timings: Timing[] = [];
+    for (let index = 0; index < count; index++) timings.push(await this.client.timeWalletOverHttp(this.identity(sender)));
+    const [first, ...rest] = timings;
     return [
-      `📡 PRiSM API 测速（钱包查询，${count} 次）`,
-      `最小：${formatNumber(min)} ms`,
-      `平均：${formatNumber(average)} ms`,
-      `最大：${formatNumber(max)} ms`,
+      `📡 API 测速（HTTP，钱包查询 ${count} 次）`,
+      `首次：${Math.round(first!.ms)} ms（含建立连接）`,
+      ...(rest.length ? [`之后：${spread(rest.map((timing) => timing.ms))}`] : []),
+      ...serverLine(timings),
+      ...(first!.colo ? [`节点：${first!.colo}`] : []),
+    ].join("\n");
+  }
+
+  /** Heartbeats (the network alone) and the same wallet query over the platform connection. */
+  async benchmarkWs(sender: Sender, rawCount?: string): Promise<string> {
+    const count = benchmarkCount(rawCount);
+    if (count === null) return "次数须为 1 到 10 的整数。";
+    const pings: number[] = [];
+    for (let index = 0; index < count; index++) pings.push(await this.client.pingSocket());
+    const timings: Timing[] = [];
+    for (let index = 0; index < count; index++) timings.push(await this.client.timeWalletOverSocket(this.identity(sender)));
+    return [
+      `📡 WS 测速（${count} 次）`,
+      `心跳：${spread(pings)}`,
+      `钱包查询：${spread(timings.map((timing) => timing.ms))}`,
+      ...serverLine(timings),
     ].join("\n");
   }
 

@@ -34,7 +34,7 @@
 | `enableStaffCommands` | `boolean` | `false` | 是否开启管理员快捷指令。 |
 | `staffUserIds` | `string[]` | `[]` | 允许执行管理员快捷指令的平台身份（如 `onebot:114514`、`telegram:114514`）白名单。空列表不授予目标用户操作权限。 |
 | `powerCommandsAdminOnly` | `boolean` | `false` | 关机是否仅允许 `staffUserIds` 中的管理员使用。`/on` 始终只允许已入场玩家使用。 |
-| `playerCommands` | `"all" \| "readonly"` | `"all"` | 玩家可用的命令。`readonly` 时玩家只能绑定身份（`bind`）、查询（`wallet`、`billing`、`history`、`items`、`list`、`show`、`麻将列表`、`versions`、`api测速`）和兑换（`redeem`）；入场、结账、上下桌和设备操作（`login`/`入场`、`logout`、`mahjong`/`上桌`/`下桌`、`lock`、`on`、`off`、`coin`、`scan`）只有 `staffUserIds` 中的管理员能用，包括替其他玩家操作。适合让 Bot 只负责身份绑定与查询、入场结账都在网页或 App Clip 里完成的店。 |
+| `playerCommands` | `"all" \| "readonly"` | `"all"` | 玩家可用的命令。`readonly` 时玩家只能绑定身份（`bind`）、查询（`wallet`、`billing`、`history`、`items`、`list`、`show`、`麻将列表`、`versions`、`api测速`、`ws测速`）和兑换（`redeem`）；入场、结账、上下桌和设备操作（`login`/`入场`、`logout`、`mahjong`/`上桌`/`下桌`、`lock`、`on`、`off`、`coin`、`scan`）只有 `staffUserIds` 中的管理员能用，包括替其他玩家操作。适合让 Bot 只负责身份绑定与查询、入场结账都在网页或 App Clip 里完成的店。 |
 | `readOnlyNotice` | `string` | `请扫描设备上的二维码或碰 NFC，在网页或 App Clip 里操作` | 只读模式下玩家使用受限命令时 Bot 的回复。 |
 | `logoutNotifyUserIds` | `string[]` | `[]` | 结账成功后额外私聊完整账单的平台身份。通知收件人为该列表与 `staffUserIds` 的去重并集。 |
 | `idleNotifyChannelIds` | `string[]` | `[]` | 闲置自动关机的提醒发到哪里。群写 `onebot:群号`，私聊写 `onebot:private:QQ号`（Koishi 的 `平台:频道` 格式）。留空则不提醒。 |
@@ -95,7 +95,8 @@ pricingConfigIds: [pricing-mahjong-a]
 * `mahjong <tableId>` / `上桌 [tableId]` - 加入指定麻将桌；`/上桌` 未提供桌号时会引导查看 `/麻将列表`。仅允许已通过 `login`/`入场` 开启默认入场会话的玩家使用。支持在桌位未满但已开局时进行中途补位（即直接开始计费上桌）。
 * `下桌` - 自动离开当前所在麻将桌，下桌后会停止计费，并显示该麻将桌的剩余游玩人数。
 * `麻将列表` - 查看已配置机器的桌名、命令别名，以及空闲、等位或游玩中状态。
-* `api测速 [次数]` - 连续查询自己的钱包，显示 Bot 到 PRiSM API 的最小、平均与最大延迟（默认 3 次，最多 10 次）。
+* `api测速 [次数]` - 走 HTTP 连续查询自己的钱包：首次（含建立连接）单独列出，之后显示最小、平均与最大延迟，并给出服务端处理时间和经过的 Cloudflare 节点（默认 5 次，最多 10 次）。
+* `ws测速 [次数]` - 走 Bot 的 WebSocket 连接：心跳往返（纯网络）和同样的钱包查询，并给出服务端处理时间（默认 5 次，最多 10 次）。两者对比可以看出延迟在网络还是在服务端，以及长连接能省下多少。
 * `versions` - 显示当前 Bot npm 包版本和后端发布版本；后端不可达时仍会显示 Bot 版本。
 
 Bot 版本直接读取本 npm 包的 `package.json`，后端版本读取无需认证的 `GET /version`。插件发布遵循 SemVer；修复使用 patch、兼容新增功能使用 minor、不兼容改动使用 major，发布前通过 `npm version <patch|minor|major>` 自动更新包版本。

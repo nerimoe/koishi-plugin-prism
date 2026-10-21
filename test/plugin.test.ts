@@ -43,6 +43,19 @@ function createDefaultClient() {
   const calls: any[] = [];
   return {
     calls,
+    httpTimings: [{ ms: 812.4, serverMs: 31, colo: "HKG" }, { ms: 205.2, serverMs: 29, colo: "HKG" }],
+    async timeWalletOverHttp(input: unknown) {
+      calls.push(["timeWalletOverHttp", input]);
+      return this.httpTimings.shift() ?? { ms: 210, serverMs: 30, colo: "HKG" };
+    },
+    async timeWalletOverSocket(input: unknown) {
+      calls.push(["timeWalletOverSocket", input]);
+      return { ms: 198.6, serverMs: 27 };
+    },
+    async pingSocket() {
+      calls.push(["pingSocket"]);
+      return 176.2;
+    },
     async getVersion() {
       calls.push(["getVersion"]);
       return { service: "prism-api", version: "1.0.0", revision: "backend123" };
@@ -215,7 +228,10 @@ function fakePlatform(answer: (frame: any) => { status: number; body: unknown } 
     readyState: 0,
     addEventListener(type: string, listener: (event: any) => void) { (listeners[type] ??= []).push(listener); },
     send(data: string) {
-      if (data === "ping") return;
+      if (data === "ping") {
+        setTimeout(() => emit("message", { data: "pong" }), 0);
+        return;
+      }
       const frame = JSON.parse(data);
       frames.push(frame);
       if (frame.type !== "request") return;
@@ -323,6 +339,7 @@ describe("applyPrismKoishiPlugin", () => {
       "billing [target:user]",
       "wallet [target:user]",
       "api测速 [count:number]",
+      "ws测速 [count:number]",
       "versions",
       "items [target:user]",
       "list",
@@ -373,7 +390,10 @@ describe("applyPrismKoishiPlugin", () => {
     expect(listResult).toContain("Player 296");
 
     const benchmark = await registered.get("api测速 [count:number]")?.action({ session: { userId: "123456" } }, "2");
-    expect(benchmark).toContain("PRiSM API 测速（钱包查询，2 次）");
+    expect(benchmark).toBe("📡 API 测速（HTTP，钱包查询 2 次）\n首次：812 ms（含建立连接）\n之后：最小 205 / 平均 205 / 最大 205 ms\n服务端处理：平均 30 ms\n节点：HKG");
+    const wsBenchmark = await registered.get("ws测速 [count:number]")?.action({ session: { userId: "123456" } }, "2");
+    expect(wsBenchmark).toBe("📡 WS 测速（2 次）\n心跳：最小 176 / 平均 176 / 最大 176 ms\n钱包查询：最小 199 / 平均 199 / 最大 199 ms\n服务端处理：平均 27 ms");
+    await expect(registered.get("ws测速 [count:number]")!.action({ session: { userId: "123456" } }, "11")).resolves.toBe("次数须为 1 到 10 的整数。");
 
     await expect(registered.get("versions")?.action({ session: { userId: "123456" } })).resolves.toBe(
       `PRiSM 版本信息\nBot：${version}\n后端：1.0.0 (backend123)`,
@@ -1898,6 +1918,43 @@ it("sends every command as a request over one authenticated connection", async (
   // Every request has its own id, so a resend is recognised as the same request.
   expect(new Set(platform.requests().map(frame => frame.id)).size).toBe(platform.requests().length);
   expect(sessions).toEqual([{ id: "entry-1", playerId: "player-1", label: "entry" }]);
+});
+
+it("times the same wallet query over HTTP and over the connection", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  const platform = fakePlatform((frame) => frame.path === "integration/players/by-identity/wallet"
+    ? { status: 200, body: { data: { wallet: [] } }, serverMs: 12 } as any
+    : { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } });
+  const posts: any[] = [];
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), {
+    ...basics, ...connection, socket: platform.factory,
+    httpPost: async (url, headers, body) => {
+      posts.push({ url, headers, body });
+      return { status: 200, headers: new Headers({ "x-response-time": "9ms", "cf-ray": "8f00aa-NRT" }), data: { data: { wallet: [] } } };
+    },
+  });
+  await platform.connected();
+  const sender = { session: { userId: "42" } };
+  const api = await registered.get("api测速 [count:number]")!.action(sender, "2");
+  expect(api).toContain("首次：");
+  expect(api).toContain("服务端处理：平均 9 ms");
+  expect(api).toContain("节点：NRT");
+  expect(posts).toHaveLength(2);
+  expect(posts[0]).toMatchObject({
+    url: "https://prism.test/api/v1/shops/shop-a/integration/players/by-identity/wallet",
+    headers: { authorization: "Bearer test-token" },
+    body: { identity: { provider: "onebot", subject: "42" } },
+  });
+  const ws = await registered.get("ws测速 [count:number]")!.action(sender, "3");
+  expect(ws).toContain("心跳：最小 ");
+  expect(ws).toContain("服务端处理：平均 12 ms");
+  expect(platform.requests().filter((frame) => frame.path === "integration/players/by-identity/wallet")).toHaveLength(3);
+  // A refused query is reported, not timed.
+  const refused = fakePlatform(() => ({ status: 403, body: { error: { code: "PLAYER_DISABLED", message: "玩家已停用" } } }));
+  const other = new Map<string, RegisteredCommand>();
+  applyPrismKoishiPlugin(createMockKoishiContext(other), { ...basics, ...connection, socket: refused.factory });
+  await refused.connected();
+  expect(await other.get("ws测速 [count:number]")!.action(sender, "1")).not.toContain("钱包查询：");
 });
 
 it("binds each actual adapter sender without configuration overrides or channel restrictions", async () => {
