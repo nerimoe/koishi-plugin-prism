@@ -254,6 +254,10 @@ function fakePlatform(answer: (frame: any) => { status: number; body: unknown } 
     frames,
     requests: () => frames.filter((frame) => frame.type === "request"),
     push(event: string, data: unknown) { emit("message", { data: JSON.stringify({ type: "event", event, data }) }); },
+    /** Any frame the platform could send, for what is not an event. */
+    pushFrame(frame: unknown) { emit("message", { data: JSON.stringify(frame) }); },
+    /** The platform connection drops. */
+    drop() { socket.close(); },
     connected: () => new Promise((resolve) => setTimeout(resolve, 0)),
   };
 }
@@ -2032,6 +2036,102 @@ it("asks for no reminders when there is nowhere to send them", async () => {
   applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: platform.factory, idleReminderMinutes: 5 });
   await platform.connected();
   expect(platform.frames[0]).toEqual({ type: "hello" });
+});
+
+/** A Home Assistant the test drives by hand: every connection the bot opens to it is kept. */
+function fakeHomeAssistant() {
+  const opened: Array<{ url: string; headers: Record<string, string> }> = [];
+  const sockets: Array<{ sent: any[]; closed: boolean; emit(type: string, event: unknown): void }> = [];
+  const factory = (url: string, headers: Record<string, string>) => {
+    opened.push({ url, headers });
+    const listeners: Record<string, Array<(event: any) => void>> = {};
+    const socket = {
+      readyState: 0,
+      sent: [] as any[],
+      closed: false,
+      addEventListener(type: string, listener: (event: any) => void) { (listeners[type] ??= []).push(listener); },
+      send(data: string) { socket.sent.push(JSON.parse(data)); },
+      close() { socket.closed = true; socket.readyState = 3; },
+      emit(type: string, event: unknown) { for (const listener of listeners[type] ?? []) listener(event); },
+    };
+    sockets.push(socket);
+    queueMicrotask(() => { socket.readyState = 1; socket.emit("open", {}); });
+    return socket;
+  };
+  const say = (index: number, message: unknown) => sockets[index]!.emit("message", { data: JSON.stringify(message) });
+  return { factory, opened, sockets, say };
+}
+const watch = { term: 5, connections: [{ id: "ha_1", urls: ["http://ha.local:8123"], token: "reader", entities: ["switch.a"] }] };
+
+describe("watching Home Assistant for the shop", () => {
+  it("says it can, by name, so the platform may ask", async () => {
+    const platform = fakePlatform(() => null);
+    const home = fakeHomeAssistant();
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: platform.factory, haSocket: home.factory, botName: "前台", idleReminderMinutes: 0 });
+    await platform.connected();
+    expect(platform.frames[0]).toEqual({ type: "hello", ha: true, name: "前台" });
+  });
+
+  it("is called Koishi when nobody named it, and can be told not to watch", async () => {
+    const named = fakePlatform(() => null);
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: named.factory, haSocket: fakeHomeAssistant().factory, idleReminderMinutes: 0 });
+    await named.connected();
+    expect(named.frames[0]).toEqual({ type: "hello", ha: true, name: "Koishi" });
+
+    const off = fakePlatform(() => null);
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: off.factory, haSocket: fakeHomeAssistant().factory, watchHomeAssistant: false, idleReminderMinutes: 0 });
+    await off.connected();
+    expect(off.frames[0]).toEqual({ type: "hello" });
+  });
+
+  it("subscribes when the platform asks and reports what it sees to the platform", async () => {
+    const platform = fakePlatform(() => null);
+    const home = fakeHomeAssistant();
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: platform.factory, haSocket: home.factory, idleReminderMinutes: 0 });
+    await platform.connected();
+    platform.pushFrame({ type: "ha.watch", watch });
+    // Home Assistant is reached by the address given, and signed into with the token given, not the bot's own.
+    expect(home.opened).toEqual([{ url: "ws://ha.local:8123/api/websocket", headers: {} }]);
+    await platform.connected();
+    home.say(0, { type: "auth_required" });
+    expect(home.sockets[0]!.sent[0]).toEqual({ type: "auth", access_token: "reader" });
+    home.say(0, { type: "auth_ok" });
+    expect(home.sockets[0]!.sent[1]).toEqual({ id: 1, type: "subscribe_entities", entity_ids: ["switch.a"] });
+    home.say(0, { id: 1, type: "event", event: { a: { "switch.a": { s: "on", a: {}, lc: 10, lu: 10 } } } });
+    const reports = platform.frames.filter((frame) => frame.type === "ha");
+    expect(reports).toEqual([
+      { type: "ha", method: "ha.status", params: { term: 5, connection: "ha_1", connected: true, error: null } },
+      { type: "ha", method: "ha.states", params: { term: 5, connection: "ha_1", full: true, states: [{ entity_id: "switch.a", state: "on", last_changed: 10, last_updated: 10, attributes: {} }] } },
+    ]);
+  });
+
+  it("lets go of Home Assistant when the platform says so, or an unreadable watch arrives", async () => {
+    const platform = fakePlatform(() => null);
+    const home = fakeHomeAssistant();
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: platform.factory, haSocket: home.factory, idleReminderMinutes: 0 });
+    await platform.connected();
+    platform.pushFrame({ type: "ha.watch", watch });
+    await platform.connected();
+    platform.pushFrame({ type: "ha.unwatch" });
+    expect(home.sockets[0]!.closed).toBe(true);
+
+    platform.pushFrame({ type: "ha.watch", watch });
+    expect(home.sockets).toHaveLength(2);
+    // The platform has nothing for it now: a watch it cannot read means stop.
+    platform.pushFrame({ type: "ha.watch", watch: { term: "x" } });
+    expect(home.sockets[1]!.closed).toBe(true);
+  });
+
+  it("lets go of Home Assistant when the platform connection drops, as the platform forgets the watch", async () => {
+    const platform = fakePlatform(() => null);
+    const home = fakeHomeAssistant();
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: platform.factory, haSocket: home.factory, idleReminderMinutes: 0 });
+    await platform.connected();
+    platform.pushFrame({ type: "ha.watch", watch });
+    await platform.connected();
+    platform.drop();
+    expect(home.sockets[0]!.closed).toBe(true);
+  });
 });
 
 it("lets an entered player keep a device on, even in read-only mode", async () => {

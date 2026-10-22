@@ -1,6 +1,10 @@
 import { apiOffsetLabel, formatDateTime, formatHM, formatMD, parseDateTime } from "./display-time.js";
+import { HaWatcher, parseWatch, type HaWatch } from "./ha-watch.js";
 import { h, Schema } from "koishi";
 import packageMetadata from "../package.json";
+
+export { HaWatcher } from "./ha-watch.js";
+export type { HaWatch } from "./ha-watch.js";
 
 export const name = "prism";
 export const version = packageMetadata.version;
@@ -26,6 +30,8 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   logoutNotifyUserIds: Schema.array(Schema.string()).default([]).description("结账账单私聊通知的平台身份列表（如 onebot:123456）"),
   idleNotifyChannelIds: Schema.array(Schema.string()).default([]).description("闲置自动关机的提醒发到哪里：群写 onebot:群号，私聊写 onebot:private:QQ号"),
   idleReminderMinutes: Schema.number().min(0).max(120).default(5).description("自动关机前几分钟提醒（0 为不提醒）"),
+  watchHomeAssistant: Schema.boolean().default(true).description("在线时替店铺监听 Home Assistant 的状态变化（平台会下发一个只能读、不能控制设备的令牌，不需要额外配置）；关闭后设备状态改由店里的机台监听"),
+  botName: Schema.string().default("Koishi").description("商户后台设备页「HA 监听器」里显示的这个 Bot 的名字；有多个 Bot 时请分别起名"),
   mahjongTableConfigs: Schema.array(Schema.object({
     displayName: Schema.string().required().description("桌位显示名称和 session 标签"),
     aliases: Schema.array(Schema.string()).default([]).description("命令别名（至少一个），例如 a、四麻A"),
@@ -101,6 +107,15 @@ export type PrismKoishiPluginConfig = {
   socket?: SocketFactory;
   /** Plain HTTP POST, used only by `api测速`; defaults to Koishi's `ctx.http`. Mainly for tests. */
   httpPost?: HttpPost;
+  /**
+   * Watch the shop's Home Assistant when the platform asks, as a HINATA IO can. On by default; the
+   * platform gives the bot a token that can read states and control nothing.
+   */
+  watchHomeAssistant?: boolean;
+  /** What the device board calls this bot. */
+  botName?: string;
+  /** Opens connections to Home Assistant; defaults to Koishi's `ctx.http.ws`. Mainly for tests. */
+  haSocket?: SocketFactory;
 };
 
 /** A plain HTTP POST answering with its status, headers and decoded body. */
@@ -395,7 +410,23 @@ export class PrismSocket {
     private readonly hello: Record<string, unknown>,
     private readonly onEvent: (event: PlatformEvent) => void,
     private readonly logger?: { warn(...args: unknown[]): void },
+    /**
+     * `onWatch`: the platform asked this bot to watch Home Assistant, or with null to stop.
+     * `onClose`: the connection is gone, and with it the platform's idea of what this bot watches.
+     */
+    private readonly hooks?: { onWatch(watch: HaWatch | null): void; onClose(): void },
   ) {}
+
+  /** Send a frame if the connection is up; a report made while it is down is dropped, as the platform has forgotten the watch by then. */
+  send(frame: Record<string, unknown>): void {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== SOCKET_OPEN) return;
+    try {
+      socket.send(JSON.stringify(frame));
+    } catch {
+      // The connection went between the check and the send.
+    }
+  }
 
   start(): void {
     this.stopped = false;
@@ -438,6 +469,8 @@ export class PrismSocket {
       this.socket = null;
       if (this.pingTimer) clearInterval(this.pingTimer);
       this.failPending();
+      // The platform forgets what this bot watches with the connection; it is asked again after hello.
+      this.hooks?.onClose();
       this.reconnectLater();
     });
     socket.addEventListener("error", (error) => this.logger?.warn("PRiSM connection error", error?.message ?? error));
@@ -481,6 +514,14 @@ export class PrismSocket {
         this.onEvent({ event: frame.event, data: frame.data });
       } catch (error) {
         this.logger?.warn("PRiSM event handling failed", error);
+      }
+    } else if (frame?.type === "ha.watch" || frame?.type === "ha.unwatch") {
+      // A watch that cannot be read is as good as none: the platform has nothing for this bot to watch.
+      const watch = frame.type === "ha.watch" ? parseWatch(frame.watch) : null;
+      try {
+        this.hooks?.onWatch(watch);
+      } catch (error) {
+        this.logger?.warn("PRiSM Home Assistant watch failed", error);
       }
     }
   }
@@ -778,6 +819,7 @@ class PrismKoishiService {
   private readonly logger?: { warn(...args: unknown[]): void };
 
   private readonly socket: PrismSocket | null = null;
+  private readonly watcher: HaWatcher | null = null;
 
   constructor(private readonly ctx: KoishiLikeContext, private readonly config: PrismKoishiPluginConfig) {
     this.logger = ctx.logger?.("prism");
@@ -794,16 +836,27 @@ class PrismKoishiService {
       return http.ws(url, { headers });
     });
     const lead = Math.max(0, config.idleReminderMinutes ?? 5);
+    // Home Assistant is reached the way the platform is, unless a test stands in for the platform and
+    // says nothing about Home Assistant: then there is no watching to offer.
+    const haOpen: SocketFactory | null = config.watchHomeAssistant === false ? null : config.haSocket ?? (config.socket ? null : open);
+    if (haOpen) this.watcher = new HaWatcher(haOpen, (frame) => this.socket?.send(frame), this.logger);
     this.socket = new PrismSocket(
       open,
       platformSocketUrl(config.baseUrl, config.shopCode),
       config.integrationToken,
-      // Without anywhere to send it, the platform need not plan a reminder.
-      lead > 0 && (config.idleNotifyChannelIds ?? []).length ? { reminderLeadSeconds: lead * 60 } : {},
+      {
+        // Without anywhere to send it, the platform need not plan a reminder.
+        ...(lead > 0 && (config.idleNotifyChannelIds ?? []).length ? { reminderLeadSeconds: lead * 60 } : {}),
+        // Saying so is what makes the platform consider this bot for the watch.
+        ...(haOpen ? { ha: true, name: (config.botName ?? "").trim() || "Koishi" } : {}),
+      },
       (event) => {
         if (event.event === "idle.reminder") void this.remindIdle(event.data as IdleReminder);
       },
       this.logger,
+      this.watcher
+        ? { onWatch: (watch) => (watch ? this.watcher!.watch(watch) : this.watcher!.stop()), onClose: () => this.watcher!.stop() }
+        : undefined,
     );
     const post: HttpPost = config.httpPost ?? (async (url, headers, body) => {
       const http = (ctx as any).http;
@@ -818,6 +871,7 @@ class PrismKoishiService {
   }
 
   dispose(): void {
+    this.watcher?.stop();
     this.socket?.stop();
   }
 
