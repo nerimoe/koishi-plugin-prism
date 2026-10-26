@@ -14,7 +14,7 @@ export const version = packageMetadata.version;
 // resource page in PRiSM, read from the platform when the bot connects.
 export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   baseUrl: Schema.string().required().description("PRiSM 后端地址，例如 https://link.neri.moe"),
-  shopCode: Schema.string().required().description("统一平台店铺编号"),
+  shopCode: Schema.string().description("可选：店铺编号。接入凭据已经指明店铺，无需填写；旧配置仍认。"),
   integrationToken: Schema.string().role("secret").required().description("集成 API Token；其余设置在 PRiSM 商户工作台 → 资源 → 这个 Bot → Bot 设置"),
 });
 
@@ -52,9 +52,9 @@ export type BotConfig = {
     idleChannelIds: string[];
     /** How many minutes before an idle power-off to tell them; 0 for never. */
     idleReminderMinutes: number;
-    /** Whether this bot offers to watch the shop's Home Assistant. */
-    watchHomeAssistant: boolean;
   };
+  /** Which shop this credential belongs to; the shop code is no longer configured by hand. */
+  shop?: { code: string; name: string };
   billingEnabled: boolean;
   currencyName: string;
   /** Staff are these platform identities. */
@@ -403,7 +403,8 @@ export class PrismSocket {
 
   constructor(
     private readonly open: SocketFactory,
-    private readonly url: string,
+    /** Resolved at each connection: the shop is learned from the credential first. */
+    private readonly url: string | (() => string),
     private readonly token: string,
     /**
      * What to say in hello, read afresh each time: the bot's settings live on
@@ -436,6 +437,13 @@ export class PrismSocket {
     this.connect();
   }
 
+  /** Connect again with what the platform has just told us, such as the shop. */
+  reconnect(): void {
+    this.socket?.close(1000, "shop known");
+    this.socket = null;
+    this.connect();
+  }
+
   stop(): void {
     this.stopped = true;
     if (this.retryTimer) clearTimeout(this.retryTimer);
@@ -448,7 +456,7 @@ export class PrismSocket {
   private connect(): void {
     let socket: SocketLike;
     try {
-      socket = this.open(this.url, { Authorization: `Bearer ${this.token}` });
+      socket = this.open(typeof this.url === "function" ? this.url() : this.url, { Authorization: `Bearer ${this.token}` });
     } catch (error) {
       this.logger?.warn("PRiSM connection failed", error);
       this.reconnectLater();
@@ -628,10 +636,13 @@ function serverLine(timings: Timing[]): string[] {
   return [`服务端处理：平均 ${Math.round(known.reduce((sum, value) => sum + value, 0) / known.length)} ms`];
 }
 
-/** The platform connection URL for a shop. */
-export function platformSocketUrl(baseUrl: string, shopCode: string): string {
+/**
+ * The platform connection URL. The credential names the shop, as a device's
+ * token names its machine at `/io/ws`, so nothing identifying is in the path.
+ */
+export function platformSocketUrl(baseUrl: string): string {
   const base = baseUrl.trim().replace(/\/+$/, "").replace(/^http/i, "ws");
-  return `${base}/api/v1/shops/${encodeURIComponent(shopCode)}/integration/ws`;
+  return `${base}/integration/ws`;
 }
 
 /* ----------------------------- api client ---------------------------------- */
@@ -639,7 +650,7 @@ export function platformSocketUrl(baseUrl: string, shopCode: string): string {
 class PrismApiClient {
   constructor(
     private readonly socket: PrismSocket,
-    private readonly http?: { post: HttpPost; baseUrl: string; shopCode: string; token: string },
+    private readonly http?: { post: HttpPost; baseUrl: string; token: string; shopCode?: string },
   ) {}
 
   private async request<T = any>(
@@ -679,6 +690,9 @@ class PrismApiClient {
       ...(identity.displayName === undefined ? {} : { displayName: identity.displayName }),
     };
   }
+
+  /** The shop this credential belongs to, read before the shop code is known. */
+  setShopCode(code: string): void { if (this.http) this.http.shopCode = code; }
 
   /** The bot's own settings and what it needs to know about the shop. */
   async getBotConfig() {
@@ -739,6 +753,7 @@ class PrismApiClient {
   async timeWalletOverHttp(identity: any): Promise<Timing> {
     if (!this.http) throw new PrismBotClientError("HTTP 测速不可用", "HTTP_UNAVAILABLE", 0, {});
     const { post, baseUrl, shopCode, token } = this.http;
+    if (!shopCode) throw new PrismBotClientError("店铺尚未读取", "SHOP_UNKNOWN", 0, {});
     const url = `${baseUrl.trim().replace(/\/+$/, "")}/api/v1/shops/${encodeURIComponent(shopCode)}/integration/players/by-identity/wallet`;
     const startedAt = performance.now();
     const response = await post(url, { authorization: `Bearer ${token}`, "content-type": "application/json" }, this.identityBody(identity));
@@ -865,8 +880,8 @@ class PrismKoishiService {
       this.client = options.client;
       return;
     }
-    if (!options.shopCode || !options.baseUrl || !options.integrationToken) {
-      throw new Error("PRiSM Koishi plugin requires 'shopCode', 'baseUrl' and 'integrationToken'.");
+    if (!options.baseUrl || !options.integrationToken) {
+      throw new Error("PRiSM Koishi plugin requires 'baseUrl' and 'integrationToken'.");
     }
     const open: SocketFactory = options.socket ?? ((url, headers) => {
       const http = (ctx as any).http;
@@ -879,7 +894,7 @@ class PrismKoishiService {
     if (haOpen) this.watcher = new HaWatcher(haOpen, (frame) => this.socket?.send(frame), this.logger);
     this.socket = new PrismSocket(
       open,
-      platformSocketUrl(options.baseUrl, options.shopCode),
+      platformSocketUrl(options.baseUrl),
       options.integrationToken,
       () => this.hello(),
       (event) => {
@@ -902,7 +917,7 @@ class PrismKoishiService {
       });
       return { status: response.status, headers: response.headers, data: response.data };
     });
-    this.client = new PrismApiClient(this.socket, { post, baseUrl: options.baseUrl, shopCode: options.shopCode, token: options.integrationToken });
+    this.client = new PrismApiClient(this.socket, { post, baseUrl: options.baseUrl!, token: options.integrationToken, ...(options.shopCode ? { shopCode: options.shopCode } : {}) });
     this.socket.start();
   }
 
@@ -923,7 +938,10 @@ class PrismKoishiService {
     this.reading = (async () => {
       try {
         const bot = parseBotConfig(await this.client.getBotConfig());
-        if (read === this.reads) this.bot = bot;
+        if (read === this.reads) {
+          this.bot = bot;
+          if (bot.shop?.code) this.client.setShopCode(bot.shop.code);
+        }
         return bot;
       } catch (error) {
         if (read === this.reads && error instanceof PrismBotClientError && error.code === "BOT_DISABLED") this.bot = null;
@@ -950,8 +968,9 @@ class PrismKoishiService {
       return {};
     }
     const { settings } = bot;
-    this.watching = settings.watchHomeAssistant && this.watcher !== null;
-    // Turned off: the platform hands the watch on when it hears the hello.
+    // Watching is the platform's to schedule: every bot that can offers, and the
+    // hub picks among them. A bot with no Home Assistant connection cannot.
+    this.watching = this.watcher !== null;
     if (!this.watching) this.watcher?.stop();
     return {
       name: bot.bot.name,
@@ -1477,9 +1496,11 @@ class PrismKoishiService {
     }
   }
 
+  /** Whether the action failed; the message itself is logged, never shown as it is. */
   private getCommandFailureMessage(result: any): string | null {
     const action = result?.action;
-    if (action?.status === "expired" || action?.status === "rejected") {
+    // `pending` here is an unanswered request (a timeout): it counts as not done.
+    if (action?.status === "expired" || action?.status === "rejected" || action?.status === "pending") {
       return action.payload?.executorFailure?.message || "命令执行被拒绝或超时";
     }
     return null;
@@ -1684,8 +1705,9 @@ class PrismKoishiService {
   handleCommandError(error: unknown): string {
     this.logCommandError(error);
     if (error instanceof PrismBotClientError) {
-      if (error.code?.startsWith("LOCATION_") && this.options.shopCode && this.options.baseUrl) {
-        return `请在网页完成到店校验：${this.options.baseUrl.replace(/\/+$/, "")}/t/${encodeURIComponent(this.options.shopCode)}`;
+      const shopCode = this.options.shopCode ?? this.bot?.shop?.code;
+      if (error.code?.startsWith("LOCATION_") && shopCode && this.options.baseUrl) {
+        return `请在网页完成到店校验：${this.options.baseUrl.replace(/\/+$/, "")}/t/${encodeURIComponent(shopCode)}`;
       }
       return humanReadableBotError(error);
     }
@@ -1748,7 +1770,7 @@ function powerFailureReason(error: unknown): string {
     if (error.code === "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION") return "玩家未入场";
     if (error.code === "PLAYER_IDENTITY_NOT_FOUND") return "玩家未注册";
     if (error.code === "BILLING_DISABLED") return BILLING_DISABLED_NOTICE;
-    return "请稍后再试";
+    if (error.code === "DEVICE_NOT_FOUND") return "没有这个设备";
   }
   return "请稍后再试";
 }
@@ -1763,13 +1785,23 @@ function deviceActionFailureReason(error: unknown): string {
   return "请稍后再试";
 }
 
+/**
+ * What a player may be told about a device that would not act. Only facts about
+ * the device itself — whether it exists, is connected, is off, answered — never
+ * how the shop configured it or what went wrong inside the platform.
+ */
+const DEVICE_REASONS: Array<[RegExp, string]> = [
+  [/设备不存在|没有找到这个资源/, "没有这个设备"],
+  [/机台未在线|没有在线客户端|设备未连接|直连中继尚未配置/, "设备未连接"],
+  [/设备已关机/, "设备已关机"],
+  [/设备未响应|机台未响应/, "设备没有响应"],
+];
+
 function deviceCommandFailureReason(result: unknown): string | null {
   const action = (result as UncheckedRecord)?.action as UncheckedRecord | undefined;
-  if (!action || (action.status !== "expired" && action.status !== "rejected")) return null;
+  if (!action || (action.status !== "expired" && action.status !== "rejected" && action.status !== "pending")) return null;
   const message = cleanText(action.payload?.executorFailure?.message);
-  if (message.includes("没有在线客户端")) return "设备未连接";
-  if (message.includes("设备配置不存在")) return "设备未配置";
-  return "请稍后再试";
+  return DEVICE_REASONS.find(([pattern]) => pattern.test(message))?.[1] ?? "操作没有完成，请找店员";
 }
 
 function deviceCommandLabel(result: unknown): string {
@@ -1829,7 +1861,6 @@ function parseBotConfig(value: unknown): BotConfig {
       receiptsToStaff: settings.receiptsToStaff === true,
       idleChannelIds: strings(settings.idleChannelIds),
       idleReminderMinutes: Math.max(0, Number(settings.idleReminderMinutes ?? 5) || 0),
-      watchHomeAssistant: settings.watchHomeAssistant !== false,
     },
     billingEnabled: record.billingEnabled !== false,
     currencyName: cleanText(record.currencyName) || "余额",

@@ -26,7 +26,6 @@ function botConfig(overrides: BotConfigInput = {}): BotConfig {
       receiptsToStaff: false,
       idleChannelIds: [],
       idleReminderMinutes: 5,
-      watchHomeAssistant: true,
       ...overrides.settings,
     },
   };
@@ -364,11 +363,14 @@ describe("applyPrismKoishiPlugin", () => {
     ))).toBe("操作失败，请稍后再试。");
   });
 
-  it("configures only how to reach the shop", () => {
+  it("configures only how to reach the shop, with the shop code optional", () => {
     const keys = Object.keys((Config as any).dict ?? {});
     expect(keys.sort()).toEqual(["baseUrl", "integrationToken", "shopCode"]);
-    for (const key of keys) expect((Config as any).dict[key].meta?.required).toBe(true);
-    expect(Config({ ...connection })).toEqual(connection);
+    // The credential names the shop: only the address and the token are required.
+    for (const key of ["baseUrl", "integrationToken"]) expect((Config as any).dict[key].meta?.required).toBe(true);
+    expect((Config as any).dict.shopCode.meta?.required).toBeFalsy();
+    expect(Config({ baseUrl: connection.baseUrl, integrationToken: connection.integrationToken }))
+      .toEqual({ baseUrl: connection.baseUrl, integrationToken: connection.integrationToken });
   });
 
   it("registers all player commands and basic flows work", async () => {
@@ -816,7 +818,8 @@ describe("applyPrismKoishiPlugin", () => {
     applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     const result = await registered.get("lock")?.action({ session: { userId: "123456" } });
-    expect(result).toBe("🔑 开门失败，请稍后再试");
+    // TTLock error numbers say nothing to a player: the generic line is kept.
+    expect(result).toBe("🔑 开门失败，操作没有完成，请找店员");
     expect(result).not.toMatch(/\d{8}/);
   });
 
@@ -882,7 +885,8 @@ describe("applyPrismKoishiPlugin", () => {
       "舞萌左机",
       "1",
     );
-    expect(failed).toBe("投币失败，请稍后再试");
+    // An unrecognised message (and anything with a URL in it) stays generic.
+    expect(failed).toBe("投币失败，操作没有完成，请找店员");
     expect(failed).not.toContain("private.example");
     expect(warnings).toHaveLength(3);
     expect(warnings[2]).toContainEqual({
@@ -910,12 +914,35 @@ describe("applyPrismKoishiPlugin", () => {
       },
     });
 
+    // A reason the player can act on is shown; the log keeps the raw one.
     const failedResult = await registered.get("on <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1");
-    expect(failedResult).toBe("启动失败，请稍后再试");
+    expect(failedResult).toBe("启动失败，没有这个设备");
     expect(warnings).toContainEqual([
       "PRiSM device command failed",
       { message: "设备不存在" },
     ]);
+  });
+
+  it("tells a player what a failed power command means for the device, and no more", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    // An unanswered request: the platform tried Home Assistant and got no answer.
+    client.requestDeviceCommandByIdentity = async () => ({
+      action: {
+        status: "pending",
+        payload: { executorFailure: { message: "机台未响应" } },
+      },
+    });
+    expect(await registered.get("on <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1"))
+      .toBe("启动失败，设备没有响应");
+    // And a refused one says what the platform knows.
+    client.requestDeviceCommandByIdentity = async () => ({
+      action: { status: "expired", payload: { executorFailure: { message: "电源未配置" } } },
+    });
+    // Something only the shop's configuration explains is not a player's to read.
+    expect(await registered.get("off <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1"))
+      .toBe("关闭失败，操作没有完成，请找店员");
   });
 
   it("requires players to be active for both power commands", async () => {
@@ -1574,7 +1601,7 @@ it("sends every command as a request over one authenticated connection", async (
   });
   await platform.connected();
   expect(platform.opened).toEqual([{
-    url: "wss://prism.invalid/api/v1/shops/audit/integration/ws",
+    url: "wss://prism.invalid/integration/ws",
     headers: { Authorization: "Bearer fake-integration-token" },
   }]);
   const sender = { session: { platform: "onebot", userId: "1234" } };
@@ -1827,17 +1854,18 @@ describe("watching Home Assistant for the shop", () => {
     expect(platform.hellos()).toEqual([{ type: "hello", name: "前台", ha: true }]);
   });
 
-  it("does not offer to watch when the settings say not to, and ignores a watch sent anyway", async () => {
-    const off = fakePlatform(() => null, { settings: { watchHomeAssistant: false } });
+  it("offers to watch whenever it can reach Home Assistant; the platform decides", async () => {
+    const platform = fakePlatform(() => null, { settings: {} });
     const home = fakeHomeAssistant();
-    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: off.factory, haSocket: home.factory });
-    await off.connected();
-    expect(off.hellos()).toEqual([{ type: "hello", name: "前台 Bot" }]);
-    off.pushFrame({ type: "ha.watch", watch });
-    expect(home.opened).toEqual([]);
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory, haSocket: home.factory });
+    await platform.connected();
+    // No setting of its own is in the way: the hello says it can, and the hub picks.
+    expect(platform.hellos()).toEqual([{ type: "hello", name: "前台 Bot", ha: true }]);
+    platform.pushFrame({ type: "ha.watch", watch });
+    expect(home.opened).toHaveLength(1);
   });
 
-  it("stops watching when the shop turns it off, and offers again when turned back on", async () => {
+  it("lets the platform take the watch away and hand it back without a setting", async () => {
     const platform = fakePlatform(() => null);
     const home = fakeHomeAssistant();
     applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory, haSocket: home.factory });
@@ -1845,17 +1873,12 @@ describe("watching Home Assistant for the shop", () => {
     platform.pushFrame({ type: "ha.watch", watch });
     expect(home.sockets).toHaveLength(1);
 
-    platform.change({ settings: { watchHomeAssistant: false } });
-    await platform.connected();
-    expect(home.sockets[0]!.closed).toBe(true);
-    // The platform hands the watch on when it hears this hello.
-    expect(platform.hellos().at(-1)).toEqual({ type: "hello", name: "前台 Bot" });
-
-    platform.change({ settings: { watchHomeAssistant: true } });
+    // The hub stops choosing this bot; it stops watching, still offering.
+    platform.pushFrame({ type: "ha.unwatch" });
     await platform.connected();
     expect(platform.hellos().at(-1)).toEqual({ type: "hello", name: "前台 Bot", ha: true });
     platform.pushFrame({ type: "ha.watch", watch });
-    expect(home.sockets).toHaveLength(2);
+    expect(home.opened).toHaveLength(2);
   });
 
   it("subscribes when the platform asks and reports what it sees to the platform", async () => {
