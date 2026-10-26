@@ -9,35 +9,13 @@ export type { HaWatch } from "./ha-watch.js";
 export const name = "prism";
 export const version = packageMetadata.version;
 
+// Only how to reach the shop is configured here. Everything else (staff, door,
+// tables, read-only mode, reminders, watching) is the bot's own settings on its
+// resource page in PRiSM, read from the platform when the bot connects.
 export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
-  autoRegister: Schema.boolean().default(true).description("是否自动注册"),
-  shopCode: Schema.string().required().description("统一平台店铺编号"),
   baseUrl: Schema.string().required().description("PRiSM 后端地址，例如 https://link.neri.moe"),
-  integrationToken: Schema.string().role("secret").description("集成 API Token"),
-  currencyName: Schema.string().default("猫粮").description("代币名称"),
-  defaultDoorDeviceId: Schema.string().default("front-door").description("默认开门设备名或别名"),
-  defaultScanProvider: Schema.string().default("aime").description("默认刷卡提供商"),
-  loginPricingConfigIds: Schema.array(Schema.string()).default([]).description("默认入场绑定的计费策略ID"),
-  loginSessionLabel: Schema.string().default("音游区间").description("默认入场场次标签 (防重复入场)"),
-  enableStaffCommands: Schema.boolean().default(false).description("是否启用管理员指令"),
-  staffUserIds: Schema.array(Schema.string()).default([]).description("允许执行管理员指令的平台身份列表（如 onebot:123456、telegram:123456）"),
-  powerCommandsAdminOnly: Schema.boolean().default(false).description("关机是否仅允许管理员使用；开机始终仅已入场玩家可用"),
-  playerCommands: Schema.union([
-    Schema.const("all").description("全部：玩家可以在 Bot 里入场、结账、上下桌和操作设备"),
-    Schema.const("readonly").description("只读：玩家只能绑定身份、查询和兑换；入场、结账、上下桌和设备操作仅管理员可用"),
-  ]).default("all").description("玩家可用的命令"),
-  readOnlyNotice: Schema.string().default("请扫描设备上的二维码或碰 NFC，在网页或 App Clip 里操作").description("只读模式下玩家使用受限命令时的回复"),
-  logoutNotifyUserIds: Schema.array(Schema.string()).default([]).description("结账账单私聊通知的平台身份列表（如 onebot:123456）"),
-  idleNotifyChannelIds: Schema.array(Schema.string()).default([]).description("闲置自动关机的提醒发到哪里：群写 onebot:群号，私聊写 onebot:private:QQ号"),
-  idleReminderMinutes: Schema.number().min(0).max(120).default(5).description("自动关机前几分钟提醒（0 为不提醒）"),
-  watchHomeAssistant: Schema.boolean().default(true).description("在线时替店铺监听 Home Assistant 的状态变化（平台会下发一个只能读、不能控制设备的令牌，不需要额外配置）；关闭后设备状态改由店里的机台监听"),
-  botName: Schema.string().default("Koishi").description("商户后台设备页「HA 监听器」里显示的这个 Bot 的名字；有多个 Bot 时请分别起名"),
-  mahjongTableConfigs: Schema.array(Schema.object({
-    displayName: Schema.string().required().description("桌位显示名称和 session 标签"),
-    aliases: Schema.array(Schema.string()).default([]).description("命令别名（至少一个），例如 a、四麻A"),
-    pricingConfigIds: Schema.array(Schema.string()).default([]).description("开局时绑定的计费方案 ID"),
-  })).default([]).description("麻将桌配置"),
-  mahjongTableSize: Schema.number().default(4).description("麻将桌人数限制"),
+  shopCode: Schema.string().required().description("统一平台店铺编号"),
+  integrationToken: Schema.string().role("secret").required().description("集成 API Token；其余设置在 PRiSM 商户工作台 → 资源 → 这个 Bot → Bot 设置"),
 });
 
 export function apply(ctx: any, config: PrismKoishiPluginConfig): void {
@@ -57,35 +35,36 @@ export class PrismBotClientError extends Error {
   }
 }
 
-export type MahjongTableConfig = {
-  tableId: string;
-  displayName: string;
-  aliases: string[];
-  pricingConfigIds: string[];
+/** What the bot is told about itself and the shop by `GET integration/bot`. */
+export type BotConfig = {
+  bot: { id: string; name: string };
+  settings: {
+    /** "readonly" leaves players binding, lookups and redeeming; staff keep every command. */
+    playerCommands: "all" | "readonly";
+    readOnlyNotice: string;
+    /** Staff may act for other players. */
+    staffCommands: boolean;
+    /** Only staff may switch machines off. */
+    powerOffStaffOnly: boolean;
+    /** Staff on the same platform get checkout receipts privately. */
+    receiptsToStaff: boolean;
+    /** Channels (`platform:channelId`) told before an idle power-off. */
+    idleChannelIds: string[];
+    /** How many minutes before an idle power-off to tell them; 0 for never. */
+    idleReminderMinutes: number;
+    /** Whether this bot offers to watch the shop's Home Assistant. */
+    watchHomeAssistant: boolean;
+  };
+  billingEnabled: boolean;
+  currencyName: string;
+  /** Staff are these platform identities. */
+  staff: Array<{ provider: string; subject: string }>;
+  /** The door `lock`/开门 opens. */
+  door: { id: string; name: string } | null;
+  mahjongTables: Array<{ id: string; name: string; aliases: string[]; capacity: number }>;
 };
 
-export type MahjongTableConfigInput = Omit<MahjongTableConfig, "tableId">;
-
 export type PrismKoishiPluginConfig = {
-  autoRegister: boolean;
-  /** "readonly" leaves players binding, lookups and redeeming; staff keep every command. */
-  playerCommands?: "all" | "readonly";
-  readOnlyNotice?: string;
-  loginPricingConfigIds?: string[];
-  loginSessionLabel?: string;
-  defaultDoorDeviceId: string;
-  defaultScanProvider: string;
-  currencyName: string;
-  enableStaffCommands?: boolean;
-  staffUserIds?: string[];
-  powerCommandsAdminOnly?: boolean;
-  logoutNotifyUserIds?: string[];
-  mahjongTableConfigs?: MahjongTableConfigInput[];
-  mahjongTableSize?: number;
-  /** Channels (`platform:channelId`) told before an idle power-off. */
-  idleNotifyChannelIds?: string[];
-  /** How many minutes before an idle power-off to tell them; 0 for never. */
-  idleReminderMinutes?: number;
   /**
    * Used by /list to resolve player display names from the chat platform.
    * For Koishi, this maps an adapter subject and provider to a nickname (e.g. the
@@ -107,13 +86,6 @@ export type PrismKoishiPluginConfig = {
   socket?: SocketFactory;
   /** Plain HTTP POST, used only by `api测速`; defaults to Koishi's `ctx.http`. Mainly for tests. */
   httpPost?: HttpPost;
-  /**
-   * Watch the shop's Home Assistant when the platform asks, as a HINATA IO can. On by default; the
-   * platform gives the bot a token that can read states and control nothing.
-   */
-  watchHomeAssistant?: boolean;
-  /** What the device board calls this bot. */
-  botName?: string;
   /** Opens connections to Home Assistant; defaults to Koishi's `ctx.http.ws`. Mainly for tests. */
   haSocket?: SocketFactory;
 };
@@ -172,7 +144,7 @@ export type KoishiActionContext = {
 
 const USAGE: Record<string, string> = {
   mahjong_join: "/上桌 <桌号>",
-  mahjong_leave: "/下桌",
+  mahjong_leave: "/下桌 [桌号]",
   mahjong_list: "/麻将列表",
   api_benchmark: "/api测速 [次数]",
   ws_benchmark: "/ws测速 [次数]",
@@ -182,26 +154,24 @@ const USAGE: Record<string, string> = {
   prism_coin: "/prism coin <设备名或别名> [数量]",
   prism_scan: "/prism scan <设备名或别名>",
   prism_redeem: "/prism redeem <兑换码>",
-  list: "/list",
+  list: "/list [资源或方案]",
   show: "/show [设备ID]",
 };
 
-type MahjongSeat = {
-  playerId: string;
-  senderId: string;
-  displayName: string;
-  identity: IdentityInput;
-};
+type MahjongTable = BotConfig["mahjongTables"][number];
 
+/** A table as `GET integration/mahjong-tables` and the mahjong command report it. */
 type MahjongTableState = {
-  waiting: MahjongSeat[];
-  activeSessions: Record<string, string>;
+  id?: string;
+  name?: string;
+  aliases?: string[];
+  capacity: number;
+  seats: Array<{ playerId: string; name: string; mine?: boolean; playing: boolean }>;
 };
 
 type IdentityInput = {
   provider: string;
   subject: string;
-  autoRegister: boolean;
   displayName: string;
 };
 
@@ -213,8 +183,14 @@ type ActiveSessionListItem = {
   playerDisplayName?: string;
   startedAt?: string;
   label?: string | null;
+  /** The plan the session bills; null for an older platform. */
+  pricingConfigId?: string | null;
+  planName?: string | null;
   identities?: Array<{ provider: string; subject: string }>;
 };
+
+/** A resource group and the plan it bills, as `integration/sessions/active` reports it. */
+type ResourceGroupItem = { id: string; name: string; isDefault?: boolean; pricingConfigId?: string | null };
 
 type ActivePlayer = {
   playerId: string;
@@ -222,8 +198,18 @@ type ActivePlayer = {
   displayName?: string;
 };
 
-type PlayerGroups = {
-  groups: Array<{ label: string; table?: MahjongTableConfig; players: ActivePlayer[] }>;
+type PlayerGroup = { label: string; capacity?: number; players: ActivePlayer[] };
+
+/** `GET integration/roster`: each person once, in one group. */
+type RosterView = {
+  total?: number;
+  groups?: Array<{
+    kind: "resource" | "plan";
+    id: string | null;
+    name: string;
+    capacity?: number;
+    members?: Array<{ playerId: string; displayName: string | null; identities?: Array<{ provider: string; subject: string }> }>;
+  }>;
 };
 
 type DeviceStateItem = {
@@ -237,69 +223,75 @@ type DeviceStateItem = {
 export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKoishiPluginConfig): void {
   const service = new PrismKoishiService(ctx, config);
 
-  const wrap = (
-    handler: (context: KoishiActionContext, ...args: string[]) => Promise<string> | string,
-  ) => async (context: KoishiActionContext, ...args: string[]): Promise<string> => {
+  type Handler = (context: KoishiActionContext, ...args: string[]) => Promise<string> | string;
+  /**
+   * `effect`: starts billing, settles a bill or drives a device, so read-only mode
+   * leaves it to staff. `billed`: means nothing in a shop that does not bill.
+   * `offline`: answers without the bot's settings, as `versions` must.
+   */
+  type Gate = { effect?: boolean; billed?: boolean; offline?: boolean };
+
+  const wrap = (handler: Handler, gate: Gate = {}) => async (context: KoishiActionContext, ...args: string[]): Promise<string> => {
+    const quoted = (message: string) =>
+      context.session?.messageId ? `${h("quote", { id: context.session.messageId })}${message}` : message;
     try {
-      const message = await handler(context, ...args);
-      return context.session?.messageId ? `${h("quote", { id: context.session.messageId })}${message}` : message;
+      if (!gate.offline) {
+        // A disabled bot, or one that cannot read its settings, answers nothing else.
+        const bot = await service.config();
+        if (gate.effect && bot.settings.playerCommands === "readonly" && !service.isStaff(bot, await service.sender(context))) {
+          return quoted(bot.settings.readOnlyNotice || DEFAULT_READ_ONLY_NOTICE);
+        }
+        if (gate.billed && !bot.billingEnabled) return quoted(BILLING_DISABLED_NOTICE);
+      }
+      return quoted(await handler(context, ...args));
     } catch (error) {
-      const message = service.handleCommandError(error);
-      return context.session?.messageId ? `${h("quote", { id: context.session.messageId })}${message}` : message;
+      return quoted(service.handleCommandError(error));
     }
   };
+
+  const effect = (handler: Handler, gate: Gate = {}) => wrap(handler, { ...gate, effect: true });
+  const billed = { billed: true };
 
   const bind = wrap(async (context, code) => service.bind(await service.sender(context), code));
   ctx.command("bind <code:string>", "绑定网页登录账号到当前平台身份").action(bind);
   // Instructions already handed to players may still say prism.bind.
   ctx.command("prism.bind <code:string>", "绑定网页登录账号到当前平台身份（旧命令，同 bind）").action(bind);
 
-  // In read-only mode a player may look things up and redeem, but anything that
-  // starts billing, settles a bill or drives a device is left to staff.
-  const effect = (
-    handler: (context: KoishiActionContext, ...args: string[]) => Promise<string> | string,
-  ) => wrap(async (context, ...args) => {
-    if (config.playerCommands === "readonly" && !matchesPlatformIdentity(config.staffUserIds ?? [], await service.sender(context))) {
-      return config.readOnlyNotice || "请扫描设备上的二维码或碰 NFC，在网页或 App Clip 里操作";
-    }
-    return handler(context, ...args);
-  });
-
   ctx.command("login [target:user]", "开启玩家计费场次").action(effect(async (context, target) =>
     service.loginForTarget(await service.sender(context), target, context.session?.bot),
-  ));
+  billed));
 
   ctx.command("入场 [target:user]", "入场").action(effect(async (context, target) =>
     service.loginForTarget(await service.sender(context), target, context.session?.bot),
-  ));
+  billed));
 
   ctx.command("mahjong <tableId>", "加入指定麻将桌").action(effect(async (context, tableId) =>
     service.mahjongJoin(await service.sender(context), tableId),
-  ));
+  billed));
 
   ctx.command("上桌 [tableId]", "加入指定麻将桌").action(effect(async (context, tableId) =>
     service.mahjongJoin(await service.sender(context), tableId),
-  ));
+  billed));
 
-  ctx.command("下桌", "离开当前所在麻将桌").action(effect(async (context) =>
-    service.mahjongLeave(await service.sender(context)),
-  ));
+  ctx.command("下桌 [tableId]", "离开当前所在麻将桌").action(effect(async (context, tableId) =>
+    service.mahjongLeave(await service.sender(context), tableId),
+  billed));
 
   ctx.command("麻将列表", "查看麻将机状态与别名").action(wrap(async () =>
     service.listMahjongTables(),
-  ));
+  billed));
 
   ctx.command("logout [target:user]", "结算玩家计费场次").action(effect(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.logout(sender, context.session?.bot), context.session?.bot),
-  ));
+  billed));
 
   ctx.command("billing [target:user]", "预览玩家结账费用").action(wrap(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.billing(sender), context.session?.bot),
-  ));
+  billed));
 
   ctx.command("wallet [target:user]", "查看玩家钱包").action(wrap(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.wallet(sender), context.session?.bot),
-  ));
+  billed));
 
   ctx.command("api测速 [count:number]", "测试 Bot 走 HTTP 到 PRiSM 的延迟").action(wrap(async (context, count) =>
     service.benchmarkApi(await service.sender(context), count),
@@ -309,17 +301,18 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.benchmarkWs(await service.sender(context), count),
   ));
 
+  // The Bot's own version stays visible while the platform is out of reach.
   ctx.command("versions", "查看 Bot 与 PRiSM 后端版本").action(wrap(async () =>
     service.versions(),
-  ));
+  { offline: true }));
 
   ctx.command("items [target:user]", "查看玩家资产").action(wrap(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.items(sender), context.session?.bot),
-  ));
+  billed));
 
-  ctx.command("list", "查看当前在线玩家列表").action(wrap(async (context) =>
-    service.listActiveSessions(await service.sender(context)),
-  ));
+  ctx.command("list [name:text]", "查看在店玩家，或某个资源、某个计费方案上的玩家").action(wrap(async (context, name) =>
+    service.listActiveSessions(await service.sender(context), name),
+  billed));
 
   ctx.command("show [deviceId]", "查看设备电源状态").action(wrap(async (context, deviceId) =>
     service.listDeviceStates(deviceId),
@@ -327,9 +320,9 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
 
   ctx.command("history [target:user]", "查看玩家历史").action(wrap(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.history(sender), context.session?.bot),
-  ));
+  billed));
 
-  ctx.command("lock", "向默认门锁设备发送开门指令").action(effect(async (context) =>
+  ctx.command("lock", "向本店门锁发送开门指令").action(effect(async (context) =>
     service.lock(await service.sender(context)),
   ));
 
@@ -357,24 +350,27 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
 
   ctx.command("redeem <code>", "兑换 PRiSM 礼物码").action(wrap(async (context, code) =>
     service.redeem(await service.sender(context), code),
-  ));
+  billed));
 
   ctx.command("add <target:user> <amount:number>", "增加玩家余额").action(wrap(async (context, target, amount) =>
     service.adjustTargetBalance(await service.sender(context), target, amount, 1, context.session?.bot),
-  ));
+  billed));
 
   ctx.command("del <target:user> <amount:number>", "扣除玩家余额").action(wrap(async (context, target, amount) =>
     service.adjustTargetBalance(await service.sender(context), target, amount, -1, context.session?.bot),
-  ));
+  billed));
 
   ctx.command("overwrite <target:user> <amount:number> [reason:text]", "覆盖结账金额并立即结账").action(
     wrap(async (context, target, amount, reason) =>
       service.overwriteTargetCheckout(await service.sender(context), target, amount, reason, context.session?.bot),
-    ),
+    billed),
   );
 
   ctx.on?.("dispose", () => service.dispose());
 }
+
+const DEFAULT_READ_ONLY_NOTICE = "请扫描店内二维码或碰 NFC，在网页或 App Clip 里入场、结账和操作设备。";
+const BILLING_DISABLED_NOTICE = "本店未启用计费";
 
 /* --------------------------- platform connection --------------------------- */
 
@@ -401,13 +397,20 @@ export class PrismSocket {
   private lastHeard = 0;
   private stopped = false;
   private sequence = 0;
+  /** Bumped by every hello being prepared, so only the newest one is sent. */
+  private greeting = 0;
   private readonly pongWaiters: Array<() => void> = [];
 
   constructor(
     private readonly open: SocketFactory,
     private readonly url: string,
     private readonly token: string,
-    private readonly hello: Record<string, unknown>,
+    /**
+     * What to say in hello, read afresh each time: the bot's settings live on
+     * the platform, so they are fetched over this connection before it is
+     * sent. Null when they could not be read.
+     */
+    private readonly hello: () => Promise<Record<string, unknown> | null>,
     private readonly onEvent: (event: PlatformEvent) => void,
     private readonly logger?: { warn(...args: unknown[]): void },
     /**
@@ -453,9 +456,8 @@ export class PrismSocket {
     }
     this.socket = socket;
     socket.addEventListener("open", () => {
-      this.retryMs = FIRST_RETRY_MS;
       this.lastHeard = Date.now();
-      socket.send(JSON.stringify({ type: "hello", ...this.hello }));
+      void this.greet(socket, true);
       if (this.pingTimer) clearInterval(this.pingTimer);
       this.pingTimer = setInterval(() => {
         // Two missed pings: the connection is gone even if no close arrived.
@@ -474,6 +476,30 @@ export class PrismSocket {
       this.reconnectLater();
     });
     socket.addEventListener("error", (error) => this.logger?.warn("PRiSM connection error", error?.message ?? error));
+  }
+
+  /**
+   * Read the bot's settings and say hello with them: on connecting, and again
+   * when the platform says they changed. A connection that cannot read them
+   * at all is closed and tried again later, without resetting the backoff, so
+   * a platform that keeps failing is not asked every second.
+   */
+  private async greet(socket: SocketLike, connecting: boolean): Promise<void> {
+    const greeting = ++this.greeting;
+    let hello: Record<string, unknown> | null = null;
+    try {
+      hello = await this.hello();
+    } catch (error) {
+      this.logger?.warn("PRiSM bot settings unavailable", error);
+    }
+    // A newer hello is on its way, or this connection is already gone.
+    if (greeting !== this.greeting || this.socket !== socket) return;
+    if (!hello) {
+      if (connecting) socket.close(4000, "settings unavailable");
+      return;
+    }
+    if (connecting) this.retryMs = FIRST_RETRY_MS;
+    this.send({ type: "hello", ...hello });
   }
 
   private reconnectLater(): void {
@@ -515,6 +541,9 @@ export class PrismSocket {
       } catch (error) {
         this.logger?.warn("PRiSM event handling failed", error);
       }
+    } else if (frame?.type === "config.changed") {
+      // The bot's settings, staff, door or tables changed: read them again and say hello with them.
+      if (this.socket) void this.greet(this.socket, false);
     } else if (frame?.type === "ha.watch" || frame?.type === "ha.unwatch") {
       // A watch that cannot be read is as good as none: the platform has nothing for this bot to watch.
       const watch = frame.type === "ha.watch" ? parseWatch(frame.watch) : null;
@@ -647,16 +676,18 @@ class PrismApiClient {
         provider: identity.provider,
         subject: identity.subject,
       },
-      ...(identity.autoRegister === undefined ? {} : { autoRegister: identity.autoRegister }),
       ...(identity.displayName === undefined ? {} : { displayName: identity.displayName }),
     };
   }
 
+  /** The bot's own settings and what it needs to know about the shop. */
+  async getBotConfig() {
+    return this.request("GET", "/rpc/integration/bot", {});
+  }
+
+  /** Always the register route: whether a new player is created is the shop's own switch. */
   async resolveOrRegisterIdentity(identity: any) {
-    const endpoint = identity.autoRegister
-      ? "/rpc/integration/players/by-identity/register"
-      : "/rpc/integration/players/by-identity/resolve";
-    const result = await this.request("POST", endpoint, {
+    const result = await this.request("POST", "/rpc/integration/players/by-identity/register", {
       body: this.identityBody(identity),
     });
     return result.player;
@@ -666,20 +697,27 @@ class PrismApiClient {
     return this.request("GET", "version", {});
   }
 
-  async startSessionByIdentity(identity: any, body?: any) {
+  /** Admit a player into the shop's default plan; `created` is false when it was already billing. */
+  async startSessionByIdentity(identity: any) {
     return this.request("POST", "/rpc/integration/players/by-identity/session/start", {
-      body: {
-        ...this.identityBody(identity),
-        ...(body ?? {}),
-      },
+      body: { ...this.identityBody(identity), entry: true },
     });
   }
 
-  async stopSessionByIdentity(identity: any, sessionId: string) {
-    return this.request("POST", "/rpc/integration/players/by-identity/sessions/:sessionId/stop", {
-      params: { sessionId },
-      body: this.identityBody(identity),
+  /** Seat or unseat a player; `table` is a table id, name or alias. */
+  async mahjongByIdentity(identity: any, table: string, action: "join" | "leave") {
+    return this.request("POST", "/rpc/integration/players/by-identity/mahjong", {
+      body: { ...this.identityBody(identity), table, action },
     });
+  }
+
+  async listMahjongTables() {
+    return this.request("GET", "/rpc/integration/mahjong-tables", {});
+  }
+
+  /** Who is in the shop, each once at their place; with a name, one resource or one plan. */
+  async roster(name?: string) {
+    return this.request("GET", "/rpc/integration/roster", name ? { query: { name } } : {});
   }
 
   async getWalletByIdentity(identity: any) {
@@ -789,12 +827,6 @@ class PrismApiClient {
     });
   }
 
-  async adjustAssetsByIdentity(identity: any, adjustments: unknown[]) {
-    return this.request("POST", "/rpc/integration/players/by-identity/assets/adjustments", {
-      body: { ...this.identityBody(identity), adjustments },
-    });
-  }
-
   async adjustWalletByIdentity(identity: any, amount: number, reason: string) {
     return this.request("POST", "/rpc/integration/players/by-identity/wallet/adjustment", {
       body: { ...this.identityBody(identity), amount, reason },
@@ -813,52 +845,56 @@ class PrismApiClient {
 type IdleReminder = { reason: "shop_empty" | "device_idle"; at: number; devices: Array<{ id: string; name: string }> };
 
 class PrismKoishiService {
-  private readonly mahjongTables = new Map<string, MahjongTableState>();
   private readonly logoutInFlight = new Map<string, Promise<string>>();
   private readonly client: any;
   private readonly logger?: { warn(...args: unknown[]): void };
 
   private readonly socket: PrismSocket | null = null;
   private readonly watcher: HaWatcher | null = null;
+  /** The bot's settings as last read; null until read, and again once the shop disables the bot. */
+  private bot: BotConfig | null = null;
+  /** The read in flight, shared by commands arriving together. */
+  private reading: Promise<BotConfig> | null = null;
+  private reads = 0;
+  /** Whether the settings let this bot watch Home Assistant. */
+  private watching = false;
 
-  constructor(private readonly ctx: KoishiLikeContext, private readonly config: PrismKoishiPluginConfig) {
+  constructor(private readonly ctx: KoishiLikeContext, private readonly options: PrismKoishiPluginConfig) {
     this.logger = ctx.logger?.("prism");
-    if (config.client) {
-      this.client = config.client;
+    if (options.client) {
+      this.client = options.client;
       return;
     }
-    if (!config.shopCode || !config.baseUrl || !config.integrationToken) {
+    if (!options.shopCode || !options.baseUrl || !options.integrationToken) {
       throw new Error("PRiSM Koishi plugin requires 'shopCode', 'baseUrl' and 'integrationToken'.");
     }
-    const open: SocketFactory = config.socket ?? ((url, headers) => {
+    const open: SocketFactory = options.socket ?? ((url, headers) => {
       const http = (ctx as any).http;
       if (!http?.ws) throw new Error("Koishi http service with WebSocket support is required.");
       return http.ws(url, { headers });
     });
-    const lead = Math.max(0, config.idleReminderMinutes ?? 5);
     // Home Assistant is reached the way the platform is, unless a test stands in for the platform and
     // says nothing about Home Assistant: then there is no watching to offer.
-    const haOpen: SocketFactory | null = config.watchHomeAssistant === false ? null : config.haSocket ?? (config.socket ? null : open);
+    const haOpen: SocketFactory | null = options.haSocket ?? (options.socket ? null : open);
     if (haOpen) this.watcher = new HaWatcher(haOpen, (frame) => this.socket?.send(frame), this.logger);
     this.socket = new PrismSocket(
       open,
-      platformSocketUrl(config.baseUrl, config.shopCode),
-      config.integrationToken,
-      {
-        // Without anywhere to send it, the platform need not plan a reminder.
-        ...(lead > 0 && (config.idleNotifyChannelIds ?? []).length ? { reminderLeadSeconds: lead * 60 } : {}),
-        // Saying so is what makes the platform consider this bot for the watch.
-        ...(haOpen ? { ha: true, name: (config.botName ?? "").trim() || "Koishi" } : {}),
-      },
+      platformSocketUrl(options.baseUrl, options.shopCode),
+      options.integrationToken,
+      () => this.hello(),
       (event) => {
         if (event.event === "idle.reminder") void this.remindIdle(event.data as IdleReminder);
       },
       this.logger,
       this.watcher
-        ? { onWatch: (watch) => (watch ? this.watcher!.watch(watch) : this.watcher!.stop()), onClose: () => this.watcher!.stop() }
+        ? {
+          // Only a bot whose settings allow it watches, whatever the platform asks.
+          onWatch: (watch) => (watch && this.watching ? this.watcher!.watch(watch) : this.watcher!.stop()),
+          onClose: () => this.watcher!.stop(),
+        }
         : undefined,
     );
-    const post: HttpPost = config.httpPost ?? (async (url, headers, body) => {
+    const post: HttpPost = options.httpPost ?? (async (url, headers, body) => {
       const http = (ctx as any).http;
       if (typeof http !== "function") throw new PrismBotClientError("HTTP 测速需要 Koishi 的 http 服务", "HTTP_UNAVAILABLE", 0, {});
       const response = await http(url, {
@@ -866,13 +902,69 @@ class PrismKoishiService {
       });
       return { status: response.status, headers: response.headers, data: response.data };
     });
-    this.client = new PrismApiClient(this.socket, { post, baseUrl: config.baseUrl, shopCode: config.shopCode, token: config.integrationToken });
+    this.client = new PrismApiClient(this.socket, { post, baseUrl: options.baseUrl, shopCode: options.shopCode, token: options.integrationToken });
     this.socket.start();
   }
 
   dispose(): void {
     this.watcher?.stop();
     this.socket?.stop();
+  }
+
+  /** The bot's settings, read from the platform the first time they are needed. */
+  async config(): Promise<BotConfig> {
+    return this.bot ?? this.reading ?? this.readConfig();
+  }
+
+  /** Read the settings afresh. A disabled bot forgets the ones it had, so each command asks again. */
+  private readConfig(): Promise<BotConfig> {
+    // Only the newest read may settle what the bot knows; an older one answering late is stale.
+    const read = ++this.reads;
+    this.reading = (async () => {
+      try {
+        const bot = parseBotConfig(await this.client.getBotConfig());
+        if (read === this.reads) this.bot = bot;
+        return bot;
+      } catch (error) {
+        if (read === this.reads && error instanceof PrismBotClientError && error.code === "BOT_DISABLED") this.bot = null;
+        throw error;
+      } finally {
+        if (read === this.reads) this.reading = null;
+      }
+    })();
+    return this.reading;
+  }
+
+  /**
+   * What this bot says in hello, from settings read just now. A disabled bot
+   * offers nothing: no watching and no reminders.
+   */
+  private async hello(): Promise<Record<string, unknown> | null> {
+    let bot: BotConfig;
+    try {
+      bot = await this.readConfig();
+    } catch (error) {
+      if (!(error instanceof PrismBotClientError && error.code === "BOT_DISABLED")) throw error;
+      this.watching = false;
+      this.watcher?.stop();
+      return {};
+    }
+    const { settings } = bot;
+    this.watching = settings.watchHomeAssistant && this.watcher !== null;
+    // Turned off: the platform hands the watch on when it hears the hello.
+    if (!this.watching) this.watcher?.stop();
+    return {
+      name: bot.bot.name,
+      // Saying so is what makes the platform consider this bot for the watch.
+      ...(this.watching ? { ha: true } : {}),
+      // Without anywhere to send it, the platform need not plan a reminder.
+      ...(settings.idleChannelIds.length && settings.idleReminderMinutes > 0 ? { reminderLeadSeconds: settings.idleReminderMinutes * 60 } : {}),
+    };
+  }
+
+  /** Whether the sender is one of the shop's staff on this platform. */
+  isStaff(bot: BotConfig, sender: Sender): boolean {
+    return bot.staff.some((identity) => identity.provider === sender.provider && identity.subject === sender.id);
   }
 
   async bind(sender: Sender, code: string): Promise<string> {
@@ -887,9 +979,9 @@ class PrismKoishiService {
 
   /** Tell the configured channels a power-off is coming. Short: they can read a device name. */
   async remindIdle(reminder: IdleReminder): Promise<void> {
-    const channels = this.config.idleNotifyChannelIds ?? [];
+    const channels = this.bot?.settings.idleChannelIds ?? [];
     if (!channels.length || typeof this.ctx.broadcast !== "function") return;
-    const now = (this.config.now?.() ?? new Date()).getTime();
+    const now = (this.options.now?.() ?? new Date()).getTime();
     const minutes = Math.max(1, Math.round((reminder.at - now) / 60_000));
     const names = reminder.devices.map((device) => device.name).join("、");
     const message = reminder.reason === "shop_empty"
@@ -918,21 +1010,19 @@ class PrismKoishiService {
     return { id, name, provider };
   }
 
-  async register(sender: Sender): Promise<string> {
-    await this.client.resolveOrRegisterIdentity(this.identity(sender));
-    return "注册成功";
-  }
-
   async loginForTarget(actor: Sender, targetSubject?: string, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
     return this.withTarget(actor, targetSubject, async (sender, isTargeted) => {
-      await this.client.startSessionByIdentity(this.identity(sender), this.loginSessionBody());
-      return isTargeted ? `✅ 已为用户 ${formatPlayerReference(sender)} 入场成功` : "✅ 入场成功";
+      const result = (await this.client.startSessionByIdentity(this.identity(sender))) as UncheckedRecord;
+      // Already in: the player had this session before, and the plan says where.
+      if (result?.created === false) {
+        const where = typeof result.planName === "string" && result.planName ? `「${result.planName}」` : "场";
+        return isTargeted ? `用户 ${formatPlayerReference(sender)} 已在${where}中，无需重复入场` : `您已在${where}中，无需重复入场`;
+      }
+      // Starting the plan may end one it cannot bill together with.
+      const stopped = Array.isArray(result?.billing?.stopped) ? result.billing.stopped.filter((name: unknown) => typeof name === "string" && name) : [];
+      const ended = stopped.length ? `\n结束方案：${stopped.join("、")}` : "";
+      return (isTargeted ? `✅ 已为用户 ${formatPlayerReference(sender)} 入场成功` : "✅ 入场成功") + ended;
     }, bot);
-  }
-
-  async login(sender: Sender): Promise<string> {
-    await this.client.startSessionByIdentity(this.identity(sender), this.loginSessionBody());
-    return "✅ 入场成功";
   }
 
   async withTarget(
@@ -956,7 +1046,7 @@ class PrismKoishiService {
         amount * direction,
         isAddition ? "Koishi 管理员增加余额" : "Koishi 管理员扣除余额",
       );
-      return `✅ 已为用户 ${formatPlayerReference(sender)}${isAddition ? "增加" : "扣除"} ${formatNumber(amount)} ${this.config.currencyName}`;
+      return `✅ 已为用户 ${formatPlayerReference(sender)}${isAddition ? "增加" : "扣除"} ${formatNumber(amount)} ${(await this.config()).currencyName}`;
     }, bot);
   }
 
@@ -966,125 +1056,83 @@ class PrismKoishiService {
       if (!Number.isFinite(total) || total < 0) return "金额必须为非负数";
       const reason = cleanText(rawReason) || "管理员调价";
       const result = (await this.client.checkoutWithOverrideByIdentity(this.identity(sender), total, reason)) as UncheckedRecord;
-      const playerId = String(result.playerSettlement.playerId);
-      if (playerId) this.removeMahjongPlayer(playerId);
       return this.formatAndNotifyCheckout(result, sender, "✅ 覆盖结账成功 · 结算账单", bot);
     }, bot);
   }
 
-  async mahjongJoin(sender: Sender, rawTableId: string): Promise<string> {
-    const tableId = cleanText(rawTableId);
-    if (!tableId) return "请指定麻将桌，例如 /上桌 a；可先使用 /麻将列表 查看可用桌位。";
-    const tableConfig = this.mahjongTableConfigs().get(tableId);
-    if (!tableConfig) return `未找到麻将桌「${tableId}」。可先使用 /麻将列表 查看可用桌位。`;
-    const tableKey = tableConfig.tableId;
-    const tableSubject = tableConfig.displayName || `${tableKey} 桌`;
-
-    const player = await this.resolvePlayer(sender);
-    const playerId = String(player.id ?? "");
-    const activeResult = (await this.client.listActiveSessions()) as UncheckedRecord;
-    const activeSessions = (activeResult.sessions ?? []) as ActiveSessionListItem[];
-    this.syncMahjongTableStates(activeSessions);
-    if (!this.hasEntrySession(playerId, activeSessions)) {
-      return "请先入场后再上桌。";
+  /**
+   * Seat the player at a table. The platform opens the table (starting
+   * everyone's billing) once it fills, so a player need not enter first.
+   */
+  async mahjongJoin(sender: Sender, rawTableRef: string): Promise<string> {
+    const tableRef = cleanText(rawTableRef);
+    if (!tableRef) return "请指定麻将桌，例如 /上桌 a；可先使用 /麻将列表 查看可用桌位。";
+    const table = findMahjongTable((await this.config()).mahjongTables, tableRef);
+    if (!table) return `未找到麻将桌「${tableRef}」。可先使用 /麻将列表 查看可用桌位。`;
+    let state: MahjongTableState;
+    try {
+      state = ((await this.client.mahjongByIdentity(this.identity(sender), table.id, "join")) as UncheckedRecord).mahjong;
+    } catch (error) {
+      if (!(error instanceof PrismBotClientError)) throw error;
+      if (error.code === "MAHJONG_TABLE_NOT_FOUND") return `未找到麻将桌「${tableRef}」。可先使用 /麻将列表 查看可用桌位。`;
+      if (error.code === "MAHJONG_TABLE_FULL") return `「${table.name}」已满桌，请等待本局结束后再上桌。`;
+      if (error.code === "MAHJONG_ALREADY_SEATED") return "你已经在另一张麻将桌上，请先 /下桌。";
+      const message = platformMessage(error);
+      if (message) return `上桌失败，${message}`;
+      throw error;
     }
-    const existing = this.mahjongTableForPlayer(playerId);
-    if (existing) return `你已经在 ${existing}，无需重复上桌。`;
-
-    const state = this.mahjongTables.get(tableKey) ?? { waiting: [], activeSessions: {} };
-    this.mahjongTables.set(tableKey, state);
-    const activeCount = Object.keys(state.activeSessions).length;
-    const tableSize = this.config.mahjongTableSize ?? 4;
-    if (activeCount >= tableSize) {
-      return `「${tableSubject}」正在游玩中（${activeCount}/${tableSize}），请等待本局结束后再上桌。`;
-    }
-
-    if (activeCount > 0) {
-      const label = tableConfig.displayName;
-      const result = (await this.client.startSessionByIdentity(this.identity(sender), {
-        pricingConfigIds: tableConfig.pricingConfigIds,
-        label,
-        entry: false,
-      })) as UncheckedRecord;
-      const session = (result?.session ?? {}) as UncheckedRecord;
-      const sessionId = String(session.id ?? "");
-      if (sessionId) {
-        state.activeSessions[playerId] = sessionId;
-      }
-      return `已加入 ${tableSubject}，补位成功，麻将计费已开始。当前 ${activeCount + 1}/${tableSize} 人。`;
-    }
-
-    state.waiting.push({
-      playerId,
-      senderId: sender.id,
-      displayName: sender.name || playerId,
-      identity: this.identity(sender),
-    });
-
-    if (state.waiting.length < tableSize) {
-      return `已加入 ${tableSubject}，当前 ${state.waiting.length}/${tableSize} 人。`;
-    }
-
-    const seats = state.waiting.slice(0, tableSize);
-    state.waiting = state.waiting.slice(tableSize);
-    const label = tableConfig.displayName;
-    for (const seat of seats) {
-      const result = (await this.client.startSessionByIdentity(seat.identity, {
-        pricingConfigIds: tableConfig.pricingConfigIds,
-        label,
-        entry: false,
-      })) as UncheckedRecord;
-      const session = (result?.session ?? {}) as UncheckedRecord;
-      const sessionId = String(session.id ?? "");
-      if (sessionId) state.activeSessions[seat.playerId] = sessionId;
-    }
-    return `${tableSubject}已满，麻将计费已开始。`;
+    const seated = state.seats.length;
+    const mine = state.seats.find((seat) => seat.mine);
+    if (mine?.playing) return `已加入 ${table.name}，麻将计费已开始。当前 ${seated}/${state.capacity} 人。`;
+    return `已加入 ${table.name}，当前 ${seated}/${state.capacity} 人，满 ${state.capacity} 人开始计费。`;
   }
 
-  async mahjongLeave(sender: Sender): Promise<string> {
-    const activeResult = (await this.client.listActiveSessions()) as UncheckedRecord;
-    this.syncMahjongTableStates((activeResult.sessions ?? []) as ActiveSessionListItem[]);
-    const player = await this.resolvePlayer(sender);
-    const playerId = String(player.id ?? "");
-    const tableKey = this.mahjongTableForPlayer(playerId);
-    if (!tableKey) return "你当前未在任何麻将桌上。";
-    const tableConfig = uniqueMahjongConfigs(this.mahjongTableConfigs()).find((table) => table.tableId === tableKey);
-    const tableSubject = tableConfig?.displayName || tableKey;
-    const state = this.mahjongTables.get(tableKey);
-    if (!state) return "你当前未在任何麻将桌上。";
-    const waitingBefore = state.waiting.length;
-    state.waiting = state.waiting.filter((seat) => seat.playerId !== playerId);
-    if (state.waiting.length !== waitingBefore) {
-      return `已离开 ${tableSubject}，当前 ${state.waiting.length}/${this.config.mahjongTableSize ?? 4} 人。`;
+  /** Leave the table the player sits at, or the one named. */
+  async mahjongLeave(sender: Sender, rawTableRef?: string): Promise<string> {
+    const tableRef = cleanText(rawTableRef);
+    const named = tableRef ? findMahjongTable((await this.config()).mahjongTables, tableRef) : null;
+    if (tableRef && !named) return `未找到麻将桌「${tableRef}」。可先使用 /麻将列表 查看可用桌位。`;
+    const [listing, player] = await Promise.all([this.client.listMahjongTables(), this.resolvePlayer(sender)]);
+    const playerId = String(player?.id ?? "");
+    const tables = ((listing as UncheckedRecord)?.tables ?? []) as MahjongTableState[];
+    const table = tables.find((candidate) =>
+      (!named || candidate.id === named.id) && candidate.seats.some((seat) => seat.playerId === playerId));
+    if (!table?.id) return named ? `你当前不在 ${named.name}。` : "你当前未在任何麻将桌上。";
+    const name = table.name || named?.name || table.id;
+    const wasPlaying = table.seats.some((seat) => seat.playerId === playerId && seat.playing);
+    let result: UncheckedRecord;
+    try {
+      result = (await this.client.mahjongByIdentity(this.identity(sender), table.id, "leave")) as UncheckedRecord;
+    } catch (error) {
+      if (!(error instanceof PrismBotClientError)) throw error;
+      if (error.code === "MAHJONG_TABLE_NOT_FOUND") return "你当前未在任何麻将桌上。";
+      const message = platformMessage(error);
+      if (message) return `下桌失败，${message}`;
+      throw error;
     }
-
-    const sessionId = state.activeSessions[playerId];
-    if (!sessionId) return "你当前未在任何麻将桌上。";
-    // Do not show an available seat while the backend session is still running.
-    // Failed stop requests must preserve the table state for safe retry.
-    await this.client.stopSessionByIdentity(this.identity(sender), sessionId);
-    delete state.activeSessions[playerId];
-    const remainingCount = Object.keys(state.activeSessions).length;
-    const tableSize = this.config.mahjongTableSize ?? 4;
-    return `已离开 ${tableSubject}，麻将计费已停止。当前还剩 ${remainingCount}/${tableSize} 人。`;
+    const state = result.mahjong as MahjongTableState;
+    // Getting up does not check out: what still bills is said, so leaving the shop means /logout.
+    const remaining = Array.isArray(result.billing?.remaining)
+      ? result.billing.remaining.filter((plan: unknown) => typeof plan === "string" && plan)
+      : [];
+    return `已离开 ${name}${wasPlaying ? "，麻将计费已停止" : ""}。当前还剩 ${state.seats.length}/${state.capacity} 人。`
+      + (remaining.length ? `\n仍在计费：${remaining.join("、")}` : "");
   }
 
   async listMahjongTables(): Promise<string> {
-    const activeResult = (await this.client.listActiveSessions()) as UncheckedRecord;
-    this.syncMahjongTableStates((activeResult.sessions ?? []) as ActiveSessionListItem[]);
-    const tableSize = this.config.mahjongTableSize ?? 4;
-    const tables = uniqueMahjongConfigs(this.mahjongTableConfigs());
+    const result = (await this.client.listMahjongTables()) as UncheckedRecord;
+    const tables = (result?.tables ?? []) as MahjongTableState[];
     if (tables.length === 0) return "当前没有配置任何麻将机。";
     const lines = [`🀄️ 麻将机列表（${tables.length} 台）`];
     for (const table of tables) {
-      const state = this.mahjongTables.get(table.tableId) ?? { waiting: [], activeSessions: {} };
-      const activeCount = Object.keys(state.activeSessions).length;
-      const waitingCount = state.waiting.length;
+      const playing = table.seats.filter((seat) => seat.playing).length;
+      const waiting = table.seats.length - playing;
       const statuses = [
-        ...(activeCount > 0 ? [`游玩中 ${activeCount}/${tableSize}`] : []),
-        ...(waitingCount > 0 ? [`等位 ${waitingCount}/${tableSize}`] : []),
+        ...(playing > 0 ? [`游玩中 ${playing}/${table.capacity}`] : []),
+        ...(waiting > 0 ? [`等位 ${waiting}/${table.capacity}`] : []),
       ];
-      lines.push(`- ${table.displayName}｜别名：${table.aliases.length > 0 ? table.aliases.join("、") : "无"}｜${statuses.join("；") || "空闲"}`);
+      const aliases = table.aliases ?? [];
+      lines.push(`- ${table.name}｜别名：${aliases.length > 0 ? aliases.join("、") : "无"}｜${statuses.join("；") || "空闲"}`);
     }
     return lines.join("\n");
   }
@@ -1111,8 +1159,6 @@ class PrismKoishiService {
 
   private async performLogout(sender: Sender, bot?: KoishiActionContext["session"]["bot"]): Promise<string> {
     const result = (await this.client.confirmCheckoutByIdentity(this.identity(sender), false)) as UncheckedRecord;
-    const playerId = String(result.playerSettlement.playerId);
-    if (playerId) this.removeMahjongPlayer(playerId);
     return this.formatAndNotifyCheckout(result, sender, "✅ 退场成功 · 结算账单", bot);
   }
 
@@ -1166,20 +1212,18 @@ class PrismKoishiService {
       wallet: result.wallet,
     };
     const receipt = await this.formatCheckoutPreview(synthetic, sender, title, false);
-    const recipients = [...new Set([...(this.config.staffUserIds ?? []), ...(this.config.logoutNotifyUserIds ?? [])])];
-    const channelIds = recipients.flatMap(identity => {
-      if (identity.startsWith(`${sender.provider}:`)) return [`private:${identity.slice(sender.provider.length+1)}`];
-      if (sender.provider === "onebot" && (!identity.includes(":") || identity.startsWith("private:")))
-        return [identity.startsWith("private:") ? identity : `private:${identity}`];
-      return [];
-    });
-    if (channelIds.length > 0 && bot?.broadcast) await bot.broadcast(channelIds,receipt);
+    // Staff reachable through this adapter get the receipt privately, when the bot's settings say so.
+    const config = await this.config();
+    const channelIds = config.settings.receiptsToStaff
+      ? [...new Set(config.staff.filter((identity) => identity.provider === sender.provider).map((identity) => `private:${identity.subject}`))]
+      : [];
+    if (channelIds.length > 0 && bot?.broadcast) await bot.broadcast(channelIds, receipt);
     return receipt;
   }
 
   async wallet(sender: Sender): Promise<string> {
     const result = (await this.client.getWalletByIdentity(this.identity(sender))) as UncheckedRecord;
-    return formatWallet(result.wallet as UncheckedRecord[], this.config.currencyName);
+    return formatWallet(result.wallet as UncheckedRecord[], (await this.config()).currencyName);
   }
 
   /**
@@ -1240,14 +1284,17 @@ class PrismKoishiService {
 
   async history(sender: Sender): Promise<string> {
     const result = (await this.client.getSessionHistoryByIdentity(this.identity(sender))) as UncheckedRecord;
-    return formatHistory(result.sessions as UncheckedRecord[], this.config.currencyName);
+    return formatHistory(result.sessions as UncheckedRecord[], (await this.config()).currencyName);
   }
 
+  /** Open the door the bot's settings name. */
   async lock(sender: Sender): Promise<string> {
+    const door = (await this.config()).door;
+    if (!door) return "🔑 本店还没有设置 Bot 开的门";
     try {
       const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
         type: "door.open",
-        target: { kind: "facility", ref: this.config.defaultDoorDeviceId },
+        target: { kind: "facility", ref: door.id },
       });
       const failure = this.getCommandFailureMessage(result);
       if (failure) {
@@ -1308,7 +1355,7 @@ class PrismKoishiService {
     try {
       const result = await this.client.requestScanByIdentity(this.identity(sender), {
         deviceRef,
-        provider: this.config.defaultScanProvider || "aime",
+        provider: "aime",
       });
       const failure = deviceCommandFailureReason(result);
       if (failure) {
@@ -1332,33 +1379,39 @@ class PrismKoishiService {
     return ["✅ 兑换成功！您获得了以下物品：", ...grantedAssets.map(formatRedeemedItem)].join("\n");
   }
 
-  async listActiveSessions(sender: Sender): Promise<string> {
-    const result = (await this.client.listActiveSessions()) as UncheckedRecord;
-    const sessions = (result?.sessions ?? []) as ActiveSessionListItem[];
-    this.syncMahjongTableStates(sessions);
-
-    const tableByLabel = new Map(
-      uniqueMahjongConfigs(this.mahjongTableConfigs()).map((table) => [
-        mahjongSessionLabel(table),
-        table,
-      ]),
-    );
-    const players = groupSessionsByPlayer(sessions);
-    const groups = await this.buildPlayerGroups(players, tableByLabel, sender.provider);
-    this.mergeWaitingSeats(groups);
-    const tables = result.mahjongTables as {id:string;name:string;capacity:number;players:{id:string;name:string}[]}[] | undefined;
-    if (!tables) return formatPlayerGroups(groups, this.config.mahjongTableSize ?? 4);
-    const seated = new Set(tables.flatMap(table => table.players.map(player => player.id)));
-    for (const group of groups.groups) group.players = group.players.filter(player => !seated.has(player.playerId));
-    return [
-      formatPlayerGroups(groups, this.config.mahjongTableSize ?? 4, new Set([
-        ...seated, ...groups.groups.flatMap(group => group.players.map(player => player.playerId)),
-      ]).size),
-      ...tables.map(table => `
-${table.name}（${table.players.length}/${table.capacity}）：
-${table.players.map(player => player.name).join("、")}`),
-    ].filter(Boolean).join("\n");
-
+  /**
+   * Who is in the shop, as the platform lists them: every player playing or
+   * billing, each once, at the resource they occupy (with its head count and
+   * capacity) or their most specific plan. With a name, everyone on that
+   * resource or billing that plan.
+   */
+  async listActiveSessions(sender: Sender, name?: string): Promise<string> {
+    const wanted = cleanText(name);
+    let roster: RosterView;
+    try {
+      roster = (await this.client.roster(wanted || undefined)) as RosterView;
+    } catch (error) {
+      if (wanted && error instanceof PrismBotClientError && error.code === "ROSTER_TARGET_NOT_FOUND") return `找不到「${wanted}」`;
+      throw error;
+    }
+    const groups: PlayerGroup[] = [];
+    for (const group of roster.groups ?? []) {
+      const players: ActivePlayer[] = [];
+      for (const member of group.members ?? []) {
+        const player: ActivePlayer = {
+          playerId: member.playerId,
+          sessions: [{ playerDisplayName: member.displayName ?? undefined, identities: member.identities ?? [] }],
+        };
+        player.displayName = await this.displayNameForPlayer(player, sender.provider);
+        players.push(player);
+      }
+      groups.push({ label: group.name, ...(group.kind === "resource" ? { capacity: group.capacity } : {}), players });
+    }
+    const [only] = groups;
+    if (wanted && only && !only.players.length) {
+      return only.capacity !== undefined ? `${only.label} ( 0/${only.capacity} )` : `${only.label} ( 0人 )`;
+    }
+    return formatPlayerGroups(groups);
   }
 
   async listDeviceStates(rawAlias?: string): Promise<string> {
@@ -1400,8 +1453,9 @@ ${table.players.map(player => player.name).join("、")}`),
 
   private async power(sender: Sender, deviceRef: string, state: string): Promise<string> {
     const operation = state === "on" ? "启动" : "关闭";
-    const staffOverride = state === "off" && this.config.powerCommandsAdminOnly === true;
-    if (staffOverride && !matchesPlatformIdentity(this.config.staffUserIds ?? [],sender)) {
+    const config = await this.config();
+    const staffOverride = state === "off" && config.settings.powerOffStaffOnly;
+    if (staffOverride && !this.isStaff(config, sender)) {
       return `${operation}失败，权限不足`;
     }
     try {
@@ -1432,9 +1486,9 @@ ${table.players.map(player => player.name).join("、")}`),
   }
 
   private async resolvePlatformName(subject: string, provider: string): Promise<string | null> {
-    if (!this.config.resolveDisplayName) return null;
+    if (!this.options.resolveDisplayName) return null;
     try {
-      return (await this.config.resolveDisplayName(subject, provider)) ?? null;
+      return (await this.options.resolveDisplayName(subject, provider)) ?? null;
     } catch {
       return null;
     }
@@ -1456,56 +1510,6 @@ ${table.players.map(player => player.name).join("、")}`),
       || "未知玩家";
   }
 
-  private async buildPlayerGroups(
-    players: Map<string, ActivePlayer>,
-    tableByLabel: Map<string, MahjongTableConfig>,
-    provider: string,
-  ): Promise<PlayerGroups> {
-    const groups: PlayerGroups = { groups: [] };
-    const groupByLabel = new Map<string, PlayerGroups["groups"][number]>();
-    const musicLabel = this.config.loginSessionLabel?.trim() || "音游区间";
-
-    for (const player of players.values()) {
-      player.displayName = await this.displayNameForPlayer(player, provider);
-      const nonMusic = player.sessions.filter((session) => Boolean(session.label) && session.label !== "entry" && session.label !== musicLabel);
-      const source = nonMusic.length > 0 ? nonMusic : player.sessions;
-      const selected = source.reduce((latest, session) =>
-        !latest || sessionStartedAt(session) > sessionStartedAt(latest) ? session : latest,
-        undefined as ActiveSessionListItem | undefined);
-      const label = selected?.label === "entry" ? musicLabel : selected?.label || musicLabel;
-      let group = groupByLabel.get(label);
-      if (!group) {
-        group = { label, table: tableByLabel.get(label), players: [] };
-        groupByLabel.set(label, group);
-        groups.groups.push(group);
-      }
-      group.players.push(player);
-    }
-    return groups;
-  }
-
-  private mergeWaitingSeats(groups: PlayerGroups): void {
-    for (const [tableId, state] of this.mahjongTables) {
-      const table = uniqueMahjongConfigs(this.mahjongTableConfigs()).find((candidate) => candidate.tableId === tableId);
-      if (!table) continue;
-      const label = mahjongSessionLabel(table);
-      let group = groups.groups.find((candidate) => candidate.label === label);
-      if (!group) {
-        group = { label, table, players: [] };
-        groups.groups.push(group);
-      }
-      for (const seat of state.waiting) {
-        if (group.players.some((player) => player.playerId === seat.playerId)) continue;
-        const existing = groups.groups.flatMap((candidate) => candidate.players)
-          .find((player) => player.playerId === seat.playerId);
-        for (const candidate of groups.groups) {
-          if (candidate !== group) candidate.players = candidate.players.filter((player) => player.playerId !== seat.playerId);
-        }
-        group.players.push(existing ?? { playerId: seat.playerId, sessions: [], displayName: seat.displayName });
-      }
-    }
-  }
-
   private async resolvePlayerDisplay(sender: Sender | null, playerId?: string): Promise<string> {
     if (!sender) return playerId || "未知玩家";
     const platformName = await this.resolvePlatformName(sender.id, sender.provider);
@@ -1516,76 +1520,14 @@ ${table.players.map(player => player.name).join("、")}`),
   }
 
 
-  private mahjongTableForPlayer(playerId: string): string | null {
-    for (const [tableId, state] of this.mahjongTables) {
-      if (state.activeSessions[playerId]) return tableId;
-      if (state.waiting.some((seat) => seat.playerId === playerId)) return tableId;
-    }
-    return null;
-  }
-
-  private removeMahjongPlayer(playerId: string): void {
-    for (const state of this.mahjongTables.values()) {
-      delete state.activeSessions[playerId];
-      state.waiting = state.waiting.filter((seat) => seat.playerId !== playerId);
-    }
-  }
-
-  private mahjongTableConfigs(): Map<string, MahjongTableConfig> {
-    return resolveMahjongTableConfigs(this.config.mahjongTableConfigs ?? []);
-  }
-
-  private syncMahjongTableStates(sessions: readonly ActiveSessionListItem[]): void {
-    const tables = uniqueMahjongConfigs(this.mahjongTableConfigs());
-    const tableByLabel = new Map(tables.map((table) => [
-      mahjongSessionLabel(table),
-      table,
-    ]));
-    // All playerIds that still have at least one active session in the backend.
-    // Used to evict waiting seats for players who have fully checked out externally.
-    const allActivePlayerIds = new Set(
-      sessions.map((s) => String(s.playerId ?? "")).filter(Boolean),
-    );
-    const activeByTable = new Map<string, Record<string, string>>();
-    for (const session of sessions) {
-      const table = tableByLabel.get(session.label ?? "");
-      const playerId = String(session.playerId ?? "");
-      const sessionId = String(session.id ?? "");
-      if (!table || !playerId || !sessionId) continue;
-      const active = activeByTable.get(table.tableId) ?? {};
-      active[playerId] = sessionId;
-      activeByTable.set(table.tableId, active);
-    }
-    for (const table of tables) {
-      const state = this.mahjongTables.get(table.tableId) ?? { waiting: [], activeSessions: {} };
-      state.activeSessions = activeByTable.get(table.tableId) ?? {};
-      // Remove seats that have been promoted to active, or whose players have
-      // fully left the backend (no entry session remaining — orphan eviction).
-      state.waiting = state.waiting.filter(
-        (seat) => !state.activeSessions[seat.playerId] && allActivePlayerIds.has(seat.playerId),
-      );
-      if (state.waiting.length > 0 || Object.keys(state.activeSessions).length > 0 || this.mahjongTables.has(table.tableId)) {
-        this.mahjongTables.set(table.tableId, state);
-      }
-    }
-  }
-
   private async resolvePlayer(sender: Sender): Promise<UncheckedRecord> {
     return (await this.client.resolveOrRegisterIdentity(this.identity(sender))) as UncheckedRecord;
-  }
-
-  private hasEntrySession(playerId: string, sessions: readonly ActiveSessionListItem[]): boolean {
-    const label = this.config.loginSessionLabel?.trim();
-    return sessions.some((session) =>
-      session.playerId === playerId && (session.label === "entry" || (label ? session.label === label : true)),
-    );
   }
 
   private identity(sender: Sender): IdentityInput {
     return {
       provider: sender.provider,
       subject: sender.id,
-      autoRegister: this.config.autoRegister,
       displayName: sender.name || `${sender.provider} ${sender.id}`,
     };
   }
@@ -1598,8 +1540,10 @@ ${table.players.map(player => player.name).join("、")}`),
     const subject = separator > 0 ? raw.slice(separator+1) : raw;
     if (provider !== actor.provider) return "请在目标平台使用该命令";
     if (!subject) return "无法获取目标平台身份";
-    const denied = this.targetStaffDenied(actor);
-    if (denied) return denied;
+    // Acting for another player is for staff, and only when the bot's settings allow it.
+    const config = await this.config();
+    if (!config.settings.staffCommands) return "员工命令未启用";
+    if (!this.isStaff(config, actor)) return "权限不足";
     try {
       const user = await bot?.getUser?.(subject);
       return { id: subject, name: user?.name || subject, provider };
@@ -1608,39 +1552,13 @@ ${table.players.map(player => player.name).join("、")}`),
     }
   }
 
-  private loginSessionBody(): { pricingConfigIds?: string[]; label?: string; entry: true } {
-    const pricingConfigIds = (this.config.loginPricingConfigIds ?? [])
-      .map((id) => id.trim())
-      .filter(Boolean);
-    const label = this.config.loginSessionLabel?.trim();
-    return {
-      entry: true,
-      ...(pricingConfigIds.length === 0 ? {} : { pricingConfigIds }),
-      ...(label ? { label } : {}),
-    };
-  }
-
-  private staffDenied(sender: Sender): string | null {
-    if (!this.config.enableStaffCommands) return "员工命令未启用";
-    const allowed = this.config.staffUserIds ?? [];
-    if (allowed.length > 0 && !matchesPlatformIdentity(allowed,sender)) return "权限不足";
-    return null;
-  }
-
-  private targetStaffDenied(sender: Sender): string | null {
-    if (!this.config.enableStaffCommands) return "员工命令未启用";
-    const allowed = this.config.staffUserIds ?? [];
-    if (!matchesPlatformIdentity(allowed,sender)) return "权限不足";
-    return null;
-  }
-
   private async formatCheckoutPreview(
     result: UncheckedRecord,
     sender: Sender | null,
     title = "【结算账单】",
     isPreview: boolean,
   ): Promise<string> {
-    const currency = this.config.currencyName;
+    const currency = (await this.config()).currencyName;
     const preview = result.settlementPreview;
     const playerId = preview.playerId;
     const subtotal = preview.subtotal;
@@ -1672,13 +1590,13 @@ ${table.players.map(player => player.name).join("、")}`),
     const validEnds = sessionPreviews.map(s => s.endedAt || (s.status === "active" ? preview.previewedAt : null)).filter(value => parseDateTime(value)) as string[];
     if (validStarts.length > 0) {
       const overallStart = validStarts.reduce((a, b) => Date.parse(a) < Date.parse(b) ? a : b);
-      const overallEnd = validEnds.length > 0 ? validEnds.reduce((a, b) => Date.parse(a) > Date.parse(b) ? a : b) : now(this.config).toISOString();
+      const overallEnd = validEnds.length > 0 ? validEnds.reduce((a, b) => Date.parse(a) > Date.parse(b) ? a : b) : now(this.options).toISOString();
       const offsets = [...new Set([apiOffsetLabel(overallStart), apiOffsetLabel(overallEnd)])].join(" / ");
       lines.push(`⏰ 游玩时间：${formatHM(overallStart)}–${formatHM(overallEnd)}（${offsets}）`);
     }
 
     for (const sPrev of sessionPreviews) {
-      const label = sPrev?.label === "entry" ? this.config.loginSessionLabel?.trim() || "音游区间" : sPrev?.label || "计时区间";
+      const label = sPrev?.label === "entry" ? DEFAULT_PLAN_LABEL : sPrev?.label || "计时区间";
       const startDt = parseDateTime(sPrev?.startedAt);
       const endDt = sessionDisplayEnd(sPrev, previewedAt);
       const status = sPrev?.status ?? "active";
@@ -1766,8 +1684,8 @@ ${table.players.map(player => player.name).join("、")}`),
   handleCommandError(error: unknown): string {
     this.logCommandError(error);
     if (error instanceof PrismBotClientError) {
-      if (error.code?.startsWith("LOCATION_") && this.config.shopCode && this.config.baseUrl) {
-        return `请在网页完成到店校验：${this.config.baseUrl.replace(/\/+$/, "")}/t/${encodeURIComponent(this.config.shopCode)}`;
+      if (error.code?.startsWith("LOCATION_") && this.options.shopCode && this.options.baseUrl) {
+        return `请在网页完成到店校验：${this.options.baseUrl.replace(/\/+$/, "")}/t/${encodeURIComponent(this.options.shopCode)}`;
       }
       return humanReadableBotError(error);
     }
@@ -1792,9 +1710,8 @@ export type Sender = { id: string; name: string; provider: string };
 
 export function humanReadableBotError(error: PrismBotClientError): string {
   if (error.code === "INVALID_PLATFORM_IDENTITY") return error.message;
-  if (error.code === "DUPLICATE_SESSION_LABEL") {
-    return "❌ 您已经处于入场状态，请勿重复发送入场命令。";
-  }
+  if (error.code === "BOT_DISABLED") return "Bot 已被店铺停用";
+  if (error.code === "BILLING_DISABLED") return BILLING_DISABLED_NOTICE;
   if (error.code === "PLAYER_HAS_NO_UNSETTLED_SESSIONS") {
     return "您当前没有未结算的账单，无需结账。";
   }
@@ -1830,6 +1747,7 @@ function powerFailureReason(error: unknown): string {
   if (error instanceof PrismBotClientError) {
     if (error.code === "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION") return "玩家未入场";
     if (error.code === "PLAYER_IDENTITY_NOT_FOUND") return "玩家未注册";
+    if (error.code === "BILLING_DISABLED") return BILLING_DISABLED_NOTICE;
     return "请稍后再试";
   }
   return "请稍后再试";
@@ -1841,6 +1759,7 @@ function deviceActionFailureReason(error: unknown): string {
   if (error.code === "DEVICE_NOT_FOUND") return "设备不存在";
   if (error.code === "SCAN_IDENTITY_NOT_BOUND_TO_PLAYER") return "玩家未绑定 Aime 卡";
   if (error.code === "COIN_COMMAND_COOLDOWN_ACTIVE") return "投币冷却中，请稍后再试";
+  if (error.code === "BILLING_DISABLED") return BILLING_DISABLED_NOTICE;
   return "请稍后再试";
 }
 
@@ -1878,56 +1797,70 @@ function normalizeDeviceState(value: DeviceStateItem["state"]): string {
   return raw;
 }
 
-export function resolveMahjongTableConfigs(
-  structured: readonly MahjongTableConfigInput[],
-): Map<string, MahjongTableConfig> {
-  const tables = new Map<string, MahjongTableConfig>();
-  for (const input of structured) {
-    const displayName = cleanText(input.displayName);
-    const tableId = displayName;
-    const aliases = [...new Set((input.aliases ?? []).map(cleanText).filter(Boolean))];
-    const pricingConfigIds = (input.pricingConfigIds ?? []).map(cleanText).filter(Boolean);
-    if (!tableId || !displayName || pricingConfigIds.length === 0) continue;
-    const table: MahjongTableConfig = { tableId, displayName, aliases, pricingConfigIds };
-    for (const alias of aliases) tables.set(alias, table);
-  }
-  return tables;
+/** The table a player named, by id, name or alias, as the platform matches it. */
+function findMahjongTable(tables: readonly MahjongTable[], ref: string): MahjongTable | null {
+  const target = ref.trim().toLowerCase();
+  return tables.find((table) =>
+    [table.id, table.name, ...table.aliases].some((value) => cleanText(value).toLowerCase() === target)) ?? null;
 }
 
-function uniqueMahjongConfigs(tables: Map<string, MahjongTableConfig>): MahjongTableConfig[] {
-  return [...new Map([...tables.values()].map((table) => [table.tableId, table])).values()];
+/** The platform's own message for a refusal, when it gave one; never the fallback naming an HTTP status. */
+function platformMessage(error: PrismBotClientError): string | null {
+  if (error.status < 400 || error.status >= 500) return null;
+  const message = (error.body as UncheckedRecord)?.error?.message;
+  return typeof message === "string" && message.trim() ? message.trim() : null;
 }
 
-function mahjongSessionLabel(table: MahjongTableConfig): string {
-  return table.displayName;
+/**
+ * The bot's settings as the platform sent them. Anything missing takes the
+ * platform's own default, so a newer setting an older platform lacks does no harm.
+ */
+function parseBotConfig(value: unknown): BotConfig {
+  const record = (value && typeof value === "object" ? value : {}) as UncheckedRecord;
+  const settings = (record.settings ?? {}) as UncheckedRecord;
+  const strings = (list: unknown) => (Array.isArray(list) ? list : []).map(cleanText).filter(Boolean);
+  return {
+    bot: { id: cleanText(record.bot?.id), name: cleanText(record.bot?.name) || "Bot" },
+    settings: {
+      playerCommands: settings.playerCommands === "readonly" ? "readonly" : "all",
+      readOnlyNotice: cleanText(settings.readOnlyNotice),
+      staffCommands: settings.staffCommands !== false,
+      powerOffStaffOnly: settings.powerOffStaffOnly === true,
+      receiptsToStaff: settings.receiptsToStaff === true,
+      idleChannelIds: strings(settings.idleChannelIds),
+      idleReminderMinutes: Math.max(0, Number(settings.idleReminderMinutes ?? 5) || 0),
+      watchHomeAssistant: settings.watchHomeAssistant !== false,
+    },
+    billingEnabled: record.billingEnabled !== false,
+    currencyName: cleanText(record.currencyName) || "余额",
+    staff: (Array.isArray(record.staff) ? record.staff : [])
+      .map((identity: UncheckedRecord) => ({ provider: cleanText(identity?.provider).toLowerCase(), subject: cleanText(identity?.subject) }))
+      .filter((identity: { provider: string; subject: string }) => identity.provider && identity.subject),
+    door: record.door?.id ? { id: cleanText(record.door.id), name: cleanText(record.door.name) } : null,
+    mahjongTables: (Array.isArray(record.mahjongTables) ? record.mahjongTables : [])
+      .filter((table: UncheckedRecord) => cleanText(table?.id))
+      .map((table: UncheckedRecord) => ({
+        id: cleanText(table.id),
+        name: cleanText(table.name) || cleanText(table.id),
+        aliases: strings(table.aliases),
+        capacity: Number(table.capacity) || 4,
+      })),
+  };
 }
 
-function groupSessionsByPlayer(sessions: readonly ActiveSessionListItem[]): Map<string, ActivePlayer> {
-  const players = new Map<string, ActivePlayer>();
-  for (const session of sessions) {
-    const playerId = session.playerId || findSubjectForSession(session, "") || "";
-    if (!playerId) continue;
-    const player = players.get(playerId) ?? { playerId, sessions: [] };
-    player.sessions.push(session);
-    players.set(playerId, player);
-  }
-  return players;
-}
+/** What the shop's default plan is called when the platform gives no plan name. */
+const DEFAULT_PLAN_LABEL = "入场计费";
 
-function sessionStartedAt(session: ActiveSessionListItem): number {
-  const value = Date.parse(session.startedAt ?? "");
-  return Number.isFinite(value) ? value : 0;
-}
-
-function formatPlayerGroups(groups: PlayerGroups, tableSize: number, totalPlayers?: number): string {
-  const populatedGroups = groups.groups.filter((group) => group.players.length > 0);
-  const total = totalPlayers ?? new Set(populatedGroups.flatMap((group) => group.players.map((player) => player.playerId))).size;
+function formatPlayerGroups(groups: readonly PlayerGroup[]): string {
+  const populatedGroups = groups.filter((group) => group.players.length > 0);
+  // Each person is in exactly one group.
+  const total = populatedGroups.reduce((sum, group) => sum + group.players.length, 0);
   if (total === 0) return "🫥 窝里目前没有玩家呢";
 
   const lines = [`[总计 ${total} 人]`];
   for (const group of populatedGroups) {
-    const heading = group.table
-      ? `${group.table.displayName} ( ${group.players.length}/${tableSize} )`
+    const heading = group.capacity !== undefined
+      ? `${group.label} ( ${group.players.length}/${group.capacity} )`
       : `${group.label} ( ${group.players.length}人 )`;
     lines.push(`\n${heading}：\n${formatPlayerNames(group.players)}`);
   }
@@ -1969,12 +1902,6 @@ function formatReleaseVersion(value: unknown): string {
   const release = cleanText(record.version) || "unknown";
   const revision = cleanText(record.revision);
   return !revision || revision === "unknown" ? release : `${release} (${revision})`;
-}
-
-function matchesPlatformIdentity(identities: string[], sender: Sender): boolean {
-  return identities.includes(`${sender.provider}:${sender.id}`)
-    // Legacy unqualified staff lists belong to the original adapter only.
-    || (sender.provider === "onebot" && identities.includes(sender.id));
 }
 
 function formatPlayerReference(sender: Sender): string {
@@ -2052,14 +1979,6 @@ function sessionDisplayEnd(session: UncheckedRecord, previewedAt: Date | null): 
 
 function now(config: PrismKoishiPluginConfig | undefined): Date {
   return config?.now ? config.now() : new Date();
-}
-
-function minDate(dates: Date[]): Date {
-  return dates.reduce((acc, d) => (d.getTime() < acc.getTime() ? d : acc), dates[0]);
-}
-
-function maxDate(dates: Date[]): Date {
-  return dates.reduce((acc, d) => (d.getTime() > acc.getTime() ? d : acc), dates[0]);
 }
 
 function formatInventoryItem(row: UncheckedRecord): string {
