@@ -819,7 +819,7 @@ describe("applyPrismKoishiPlugin", () => {
 
     const result = await registered.get("lock")?.action({ session: { userId: "123456" } });
     // TTLock error numbers say nothing to a player: the generic line is kept.
-    expect(result).toBe("🔑 开门失败，请稍后再试，或让店员在后台查看");
+    expect(result).toBe("🔑 开门失败，操作没有完成，请找店员");
     expect(result).not.toMatch(/\d{8}/);
   });
 
@@ -886,7 +886,7 @@ describe("applyPrismKoishiPlugin", () => {
       "1",
     );
     // An unrecognised message (and anything with a URL in it) stays generic.
-    expect(failed).toBe("投币失败，请稍后再试，或让店员在后台查看");
+    expect(failed).toBe("投币失败，操作没有完成，请找店员");
     expect(failed).not.toContain("private.example");
     expect(warnings).toHaveLength(3);
     expect(warnings[2]).toContainEqual({
@@ -916,14 +916,14 @@ describe("applyPrismKoishiPlugin", () => {
 
     // A reason the player can act on is shown; the log keeps the raw one.
     const failedResult = await registered.get("on <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1");
-    expect(failedResult).toBe("启动失败，设备不存在");
+    expect(failedResult).toBe("启动失败，没有这个设备");
     expect(warnings).toContainEqual([
       "PRiSM device command failed",
       { message: "设备不存在" },
     ]);
   });
 
-  it("tells why a power command could not be confirmed, instead of only asking to retry", async () => {
+  it("tells a player what a failed power command means for the device, and no more", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
     applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
@@ -935,13 +935,14 @@ describe("applyPrismKoishiPlugin", () => {
       },
     });
     expect(await registered.get("on <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1"))
-      .toBe("启动失败，设备未响应");
+      .toBe("启动失败，设备没有响应");
     // And a refused one says what the platform knows.
     client.requestDeviceCommandByIdentity = async () => ({
       action: { status: "expired", payload: { executorFailure: { message: "电源未配置" } } },
     });
+    // Something only the shop's configuration explains is not a player's to read.
     expect(await registered.get("off <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1"))
-      .toBe("关闭失败，没有配置电源");
+      .toBe("关闭失败，操作没有完成，请找店员");
   });
 
   it("requires players to be active for both power commands", async () => {
