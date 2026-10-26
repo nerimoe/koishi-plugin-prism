@@ -1498,7 +1498,9 @@ class PrismKoishiService {
 
   private getCommandFailureMessage(result: any): string | null {
     const action = result?.action;
-    if (action?.status === "expired" || action?.status === "rejected") {
+    // `pending` here is an unanswered request (a timeout): it failed to be
+    // confirmed, and the platform says why it could not reach the device.
+    if (action?.status === "expired" || action?.status === "rejected" || action?.status === "pending") {
       return action.payload?.executorFailure?.message || "命令执行被拒绝或超时";
     }
     return null;
@@ -1768,7 +1770,9 @@ function powerFailureReason(error: unknown): string {
     if (error.code === "DEVICE_COMMAND_REQUIRES_ACTIVE_SESSION") return "玩家未入场";
     if (error.code === "PLAYER_IDENTITY_NOT_FOUND") return "玩家未注册";
     if (error.code === "BILLING_DISABLED") return BILLING_DISABLED_NOTICE;
-    return "请稍后再试";
+    // The platform words reasons for people in Chinese; anything else is an
+    // internal message and stays behind "稍后再试".
+    if (/[\u4e00-\u9fff]/.test(error.message)) return error.message;
   }
   return "请稍后再试";
 }
@@ -1783,13 +1787,27 @@ function deviceActionFailureReason(error: unknown): string {
   return "请稍后再试";
 }
 
+/** The device's own reason, when it names something the player can act on. */
+const DEVICE_REASONS: Array<[RegExp, string]> = [
+  [/电源未配置/, "没有配置电源"],
+  [/设备已关机/, "设备已关机"],
+  [/读取不到设备电源状态/, "读不到设备的电源状态"],
+  [/空调未配置/, "没有配置空调"],
+  [/机台通信失败/, "机台通信失败"],
+  [/机台未在线|没有在线客户端/, "设备未连接"],
+  [/直连中继尚未配置/, "设备未连接"],
+  [/机台未配置连接地址|设备配置不存在/, "设备未配置"],
+  [/设备不存在/, "设备不存在"],
+  [/设备未响应|机台未响应/, "设备未响应"],
+];
+
 function deviceCommandFailureReason(result: unknown): string | null {
   const action = (result as UncheckedRecord)?.action as UncheckedRecord | undefined;
-  if (!action || (action.status !== "expired" && action.status !== "rejected")) return null;
+  if (!action || (action.status !== "expired" && action.status !== "rejected" && action.status !== "pending")) return null;
   const message = cleanText(action.payload?.executorFailure?.message);
-  if (message.includes("没有在线客户端")) return "设备未连接";
-  if (message.includes("设备配置不存在")) return "设备未配置";
-  return "请稍后再试";
+  // Only known, actionable reasons are shown; validator codes and TTLock error
+  // numbers stay behind the generic line.
+  return DEVICE_REASONS.find(([pattern]) => pattern.test(message))?.[1] ?? "请稍后再试，或让店员在后台查看";
 }
 
 function deviceCommandLabel(result: unknown): string {

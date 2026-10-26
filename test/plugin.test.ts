@@ -818,7 +818,8 @@ describe("applyPrismKoishiPlugin", () => {
     applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     const result = await registered.get("lock")?.action({ session: { userId: "123456" } });
-    expect(result).toBe("🔑 开门失败，请稍后再试");
+    // TTLock error numbers say nothing to a player: the generic line is kept.
+    expect(result).toBe("🔑 开门失败，请稍后再试，或让店员在后台查看");
     expect(result).not.toMatch(/\d{8}/);
   });
 
@@ -884,7 +885,8 @@ describe("applyPrismKoishiPlugin", () => {
       "舞萌左机",
       "1",
     );
-    expect(failed).toBe("投币失败，请稍后再试");
+    // An unrecognised message (and anything with a URL in it) stays generic.
+    expect(failed).toBe("投币失败，请稍后再试，或让店员在后台查看");
     expect(failed).not.toContain("private.example");
     expect(warnings).toHaveLength(3);
     expect(warnings[2]).toContainEqual({
@@ -912,12 +914,34 @@ describe("applyPrismKoishiPlugin", () => {
       },
     });
 
+    // A reason the player can act on is shown; the log keeps the raw one.
     const failedResult = await registered.get("on <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1");
-    expect(failedResult).toBe("启动失败，请稍后再试");
+    expect(failedResult).toBe("启动失败，设备不存在");
     expect(warnings).toContainEqual([
       "PRiSM device command failed",
       { message: "设备不存在" },
     ]);
+  });
+
+  it("tells why a power command could not be confirmed, instead of only asking to retry", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    // An unanswered request: the platform tried Home Assistant and got no answer.
+    client.requestDeviceCommandByIdentity = async () => ({
+      action: {
+        status: "pending",
+        payload: { executorFailure: { message: "机台未响应" } },
+      },
+    });
+    expect(await registered.get("on <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1"))
+      .toBe("启动失败，设备未响应");
+    // And a refused one says what the platform knows.
+    client.requestDeviceCommandByIdentity = async () => ({
+      action: { status: "expired", payload: { executorFailure: { message: "电源未配置" } } },
+    });
+    expect(await registered.get("off <deviceRef>")?.action({ session: { userId: "123" } }, "ai-1"))
+      .toBe("关闭失败，没有配置电源");
   });
 
   it("requires players to be active for both power commands", async () => {
