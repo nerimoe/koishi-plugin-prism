@@ -22,7 +22,7 @@ Koishi 里只填怎么连到店铺：
 | 配置项 | 类型 | 描述 |
 | :--- | :---: | :--- |
 | `baseUrl` | `string` | **必填**。PRiSM Next Server 的访问基准 URL（如 `https://prism-mmw.neri.moe`）。 |
-| `shopCode` | `string` | **必填**。统一平台的店铺公开编号。 |
+| `shopCode` | `string` | 可选。店铺公开编号；接入凭据已经指明店铺，**不需要填**。旧配置保留也能用。 |
 | `integrationToken` | `string` | **必填**。从 PRiSM 网页后台生成的 Integration API 令牌。 |
 
 其余一切都在 PRiSM 网页里设置：每个令牌对应一个 Bot，Bot 在店铺里是一个**资源**。在**商户工作台 → 资源 → 这个 Bot → Bot 设置**里可以改：
@@ -38,17 +38,16 @@ Koishi 里只填怎么连到店铺：
 | 账单私聊店员 | 玩家退场或店员覆盖结账后，把同一份账单私聊给同一聊天平台上的店员。 |
 | 闲置提醒频道、提前分钟 | 闲置自动关机的提醒发到哪里（Koishi 的 `平台:频道` 格式，如群 `onebot:群号`、私聊 `onebot:private:QQ号`），以及提前几分钟；0 或不填频道则不提醒。 |
 | 门锁 | `lock` 打开的门（带门锁能力的资源）；店里只有一扇门时默认就是它。没有门时 `lock` 回复本店还没有设置。 |
-| 监听 Home Assistant | 见下文「监听 Home Assistant」。 |
 
 **店员**是在这家店工作、并在网页里绑定了聊天平台身份的人：Bot 按「平台 + 账号」认人，`onebot:114514` 是店员不代表 `telegram:114514` 也是。**货币名称**取店铺的余额资产名，**麻将桌**和**门锁**取店铺的资源，都不需要在 Koishi 里重复填写。店铺没有开启计费时，入场、结账、钱包、上下桌、`list` 等计费命令直接回复「本店未启用计费」。
 
 Bot 连上平台后先读取这些设置，再向平台打招呼；网页里改了设置、店员绑定了新身份、增删了麻将桌或门锁时，平台会通知 Bot 重新读取，**不需要重启 Koishi**。
 
-旧版的 `autoRegister`、`currencyName`、`defaultDoorDeviceId`、`defaultScanProvider`（刷卡固定使用 Aime）、`loginPricingConfigIds`、`loginSessionLabel`、`enableStaffCommands`、`staffUserIds`、`powerCommandsAdminOnly`、`playerCommands`、`readOnlyNotice`、`logoutNotifyUserIds`、`idleNotifyChannelIds`、`idleReminderMinutes`、`watchHomeAssistant`、`botName`、`mahjongTableConfigs`、`mahjongTableSize` 已全部移除；升级后请到 Bot 的资源页重新设置。玩家首次使用时是否自动建档由店铺自己的注册开关决定。入场开始这个 Bot 在 PRiSM 里的计费方案：Bot 资源的专属方案，否则它所属资源组的方案；没改过的 Bot 在默认资源组，即店铺默认计费方案。已经在计费时 Bot 回复「您已在「方案名」中」。
+旧版的 `autoRegister`、`currencyName`、`defaultDoorDeviceId`、`defaultScanProvider`（刷卡固定使用 Aime）、`loginPricingConfigIds`、`loginSessionLabel`、`enableStaffCommands`、`staffUserIds`、`powerCommandsAdminOnly`、`playerCommands`、`readOnlyNotice`、`logoutNotifyUserIds`、`idleNotifyChannelIds`、`idleReminderMinutes`、`watchHomeAssistant`（改由平台调度）、`botName`、`mahjongTableConfigs`、`mahjongTableSize` 已全部移除；升级后请到 Bot 的资源页重新设置。玩家首次使用时是否自动建档由店铺自己的注册开关决定。入场开始这个 Bot 在 PRiSM 里的计费方案：Bot 资源的专属方案，否则它所属资源组的方案；没改过的 Bot 在默认资源组，即店铺默认计费方案。已经在计费时 Bot 回复「您已在「方案名」中」。
 
 ### 统一平台
 
-配置 `baseUrl`、`shopCode` 和本店的 Integration 令牌后，插件与 PRiSM 只保持**一条 WebSocket 连接**（`/api/v1/shops/:shopCode/integration/ws`），所有命令都作为请求帧走这条连接，平台也通过它推送闲置关机提醒。连接断开时命令直接回复「操作失败，暂时连不上服务器。」，不排队、不自动重发；插件在后台自动重连。需要 Koishi 的 `http` 服务（`ctx.http.ws`）。不再支持不填 `shopCode` 的单店兼容部署。
+配置 `baseUrl` 和本店的 Integration 令牌后（店铺编号可选），插件先按凭据读出所属店铺，再与 PRiSM 只保持**一条 WebSocket 连接**（`/api/v1/shops/:shopCode/integration/ws`），所有命令都作为请求帧走这条连接，平台也通过它推送闲置关机提醒。连接断开时命令直接回复「操作失败，暂时连不上服务器。」，不排队、不自动重发；插件在后台自动重连。需要 Koishi 的 `http` 服务（`ctx.http.ws`）。不再支持不填 `shopCode` 的单店兼容部署。
 
 玩家在网页取得验证码后，向任意已接入的店铺 Bot 发送 `bind 验证码`（旧命令 `prism.bind` 仍可用）。店家可以在 PRiSM「设置 → 玩家与身份 → 绑定提示」改写玩家看到的绑定提示。所有命令从消息的 `session.platform` 和 `session.userId` 读取身份，发送 `{ code, provider, subject }`，不接受手填或代填身份；`provider` 配置已移除。例如同一实例的 OneBot 和 Telegram 消息分别使用 `onebot:114514` 和 `telegram:114514`。群／私聊过滤交给 Koishi。网页账号可以跨店使用，平台验证、玩家和余额按店铺隔离；同一网页账号追加平台绑定时复用同一个玩家。
 
@@ -60,7 +59,7 @@ Bot 连上平台后先读取这些设置，再向平台打招呼；网页里改�
 
 Bot 一直在线，所以平台会优先让 Bot 当店铺的 Home Assistant **监听器**：连上平台后 Bot 在握手里声明自己能监听，平台把 Home Assistant 的地址、一个**只读令牌**和要关心的设备实体发给它，Bot 订阅这些实体，把每次变化通过同一条连接报给平台。玩家页和商户后台因此能实时看到电源、空调状态，不必再临时去问 Home Assistant。店里的 HINATA IO 机台也能做同样的事；一家店同时监听的数量默认 2 个（由平台管理员按店铺调整），Bot 排在机台前面：一个 Bot 在线就占一个名额，两个 Bot 就占满，机台只补空位，Bot 上线时机台会在 Bot 交出完整状态之后让位，中间没有空窗。商户后台设备页的「HA 监听器」会显示现在是谁在监听。
 
-- **令牌**：平台自动在 Home Assistant 里建一个只能读、不能控制任何设备的账号，Bot 拿到的是它的令牌，不是店家的控制令牌。但它能读这个 Home Assistant 里被指定实体的状态，**请只在由店家自己运维的 Bot 上开启**；不想让某个 Bot 拿到，在它的「Bot 设置」里关掉「监听 Home Assistant」即可：它不会被分配，正在监听的会立即交给别的监听器，也不影响其他功能。
+- **谁在监听由平台决定**：能连上 Home Assistant 的 Bot 都会在 hello 里声明，平台按店铺的监听名额挑选和轮换；店家没有开关，也不能指定。不想要某个 Bot 参与，停用这个 Bot 资源即可。
 - **地址**：平台给的地址列表按顺序尝试（店内地址在前、外部地址在后），不区分 Bot 在哪、Home Assistant 在哪，哪个通就用哪个。每个地址最多等 10 秒连接，一轮全部失败才向平台报断开，上次连上的地址下次排第一。
 - **名字**：设备页显示的是 Bot 资源的名字，多个 Bot 请在资源页分别起名。
 - 需要 Koishi 的 `http` 服务（`ctx.http.ws`），和与平台的连接用同一个。
@@ -155,7 +154,7 @@ npm version minor --no-git-tag-version
 
 ### 0.3.0
 
-Koishi 配置只剩 `baseUrl`、`shopCode`、`integrationToken`。Bot 在 PRiSM 里是一个资源，其余设置（只读模式、店员命令、关机权限、账单私聊、闲置提醒、门锁、监听 Home Assistant、名字、启用）都在商户工作台的「Bot 设置」里改，连接后读取、修改后由平台通知重新读取。店员改为网页里绑定了平台身份的店员，货币名称、门锁和麻将桌取自店铺。麻将改由平台完成（不必先入场，满桌开局），`下桌` 可指明桌号；`list` 按平台的在店名单输出（每人一处，资源带人数/容量），`list <资源或方案>` 只列这一项；下桌后回复还在计费的方案；入场开始 Bot 所在资源组的方案（或 Bot 的专属方案），重复入场回复「已在「方案名」中」，入场结束了互斥方案时列出被结束的方案。移除插件自己的麻将桌状态与所有旧配置项。需要配套支持 `integration/bot`、`integration/mahjong-tables`、`integration/roster` 和 `config.changed` 的 PRiSM（1.1.0 起）；店铺所在的 PRiSM 升级之前不要升级到此版本。
+Koishi 配置只剩 `baseUrl` 和 `integrationToken`（`shopCode` 可选、已不需要）。Bot 在 PRiSM 里是一个资源，其余设置（只读模式、店员命令、关机权限、账单私聊、闲置提醒、门锁、名字、启用）都在商户工作台的「Bot 设置」里改，连接后读取、修改后由平台通知重新读取。店员改为网页里绑定了平台身份的店员，货币名称、门锁和麻将桌取自店铺。麻将改由平台完成（不必先入场，满桌开局），`下桌` 可指明桌号；`list` 按平台的在店名单输出（每人一处，资源带人数/容量），`list <资源或方案>` 只列这一项；下桌后回复还在计费的方案；入场开始 Bot 所在资源组的方案（或 Bot 的专属方案），重复入场回复「已在「方案名」中」，入场结束了互斥方案时列出被结束的方案。移除插件自己的麻将桌状态与所有旧配置项。需要配套支持 `integration/bot`、`integration/mahjong-tables`、`integration/roster` 和 `config.changed` 的 PRiSM（1.1.0 起）；店铺所在的 PRiSM 升级之前不要升级到此版本。
 
 ### 0.1.39
 

@@ -26,7 +26,6 @@ function botConfig(overrides: BotConfigInput = {}): BotConfig {
       receiptsToStaff: false,
       idleChannelIds: [],
       idleReminderMinutes: 5,
-      watchHomeAssistant: true,
       ...overrides.settings,
     },
   };
@@ -364,11 +363,14 @@ describe("applyPrismKoishiPlugin", () => {
     ))).toBe("操作失败，请稍后再试。");
   });
 
-  it("configures only how to reach the shop", () => {
+  it("configures only how to reach the shop, with the shop code optional", () => {
     const keys = Object.keys((Config as any).dict ?? {});
     expect(keys.sort()).toEqual(["baseUrl", "integrationToken", "shopCode"]);
-    for (const key of keys) expect((Config as any).dict[key].meta?.required).toBe(true);
-    expect(Config({ ...connection })).toEqual(connection);
+    // The credential names the shop: only the address and the token are required.
+    for (const key of ["baseUrl", "integrationToken"]) expect((Config as any).dict[key].meta?.required).toBe(true);
+    expect((Config as any).dict.shopCode.meta?.required).toBeFalsy();
+    expect(Config({ baseUrl: connection.baseUrl, integrationToken: connection.integrationToken }))
+      .toEqual({ baseUrl: connection.baseUrl, integrationToken: connection.integrationToken });
   });
 
   it("registers all player commands and basic flows work", async () => {
@@ -1827,17 +1829,18 @@ describe("watching Home Assistant for the shop", () => {
     expect(platform.hellos()).toEqual([{ type: "hello", name: "前台", ha: true }]);
   });
 
-  it("does not offer to watch when the settings say not to, and ignores a watch sent anyway", async () => {
-    const off = fakePlatform(() => null, { settings: { watchHomeAssistant: false } });
+  it("offers to watch whenever it can reach Home Assistant; the platform decides", async () => {
+    const platform = fakePlatform(() => null, { settings: {} });
     const home = fakeHomeAssistant();
-    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: off.factory, haSocket: home.factory });
-    await off.connected();
-    expect(off.hellos()).toEqual([{ type: "hello", name: "前台 Bot" }]);
-    off.pushFrame({ type: "ha.watch", watch });
-    expect(home.opened).toEqual([]);
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory, haSocket: home.factory });
+    await platform.connected();
+    // No setting of its own is in the way: the hello says it can, and the hub picks.
+    expect(platform.hellos()).toEqual([{ type: "hello", name: "前台 Bot", ha: true }]);
+    platform.pushFrame({ type: "ha.watch", watch });
+    expect(home.opened).toHaveLength(1);
   });
 
-  it("stops watching when the shop turns it off, and offers again when turned back on", async () => {
+  it("lets the platform take the watch away and hand it back without a setting", async () => {
     const platform = fakePlatform(() => null);
     const home = fakeHomeAssistant();
     applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory, haSocket: home.factory });
@@ -1845,17 +1848,12 @@ describe("watching Home Assistant for the shop", () => {
     platform.pushFrame({ type: "ha.watch", watch });
     expect(home.sockets).toHaveLength(1);
 
-    platform.change({ settings: { watchHomeAssistant: false } });
-    await platform.connected();
-    expect(home.sockets[0]!.closed).toBe(true);
-    // The platform hands the watch on when it hears this hello.
-    expect(platform.hellos().at(-1)).toEqual({ type: "hello", name: "前台 Bot" });
-
-    platform.change({ settings: { watchHomeAssistant: true } });
+    // The hub stops choosing this bot; it stops watching, still offering.
+    platform.pushFrame({ type: "ha.unwatch" });
     await platform.connected();
     expect(platform.hellos().at(-1)).toEqual({ type: "hello", name: "前台 Bot", ha: true });
     platform.pushFrame({ type: "ha.watch", watch });
-    expect(home.sockets).toHaveLength(2);
+    expect(home.opened).toHaveLength(2);
   });
 
   it("subscribes when the platform asks and reports what it sees to the platform", async () => {
