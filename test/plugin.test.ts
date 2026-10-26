@@ -1,10 +1,38 @@
 import { describe, expect, it } from "bun:test";
-import { applyPrismKoishiPlugin, humanReadableBotError, PrismBotClientError, resolveMahjongTableConfigs, version, type PrismKoishiPluginConfig } from "../src";
+import { applyPrismKoishiPlugin, Config, humanReadableBotError, PrismBotClientError, version, type BotConfig, type PrismKoishiPluginConfig } from "../src";
 
 type RegisteredCommand = {
   description: string;
   action: (sessionContext: any, ...args: string[]) => Promise<string> | string;
 };
+
+type BotConfigInput = Partial<Omit<BotConfig, "settings">> & { settings?: Partial<BotConfig["settings"]> };
+
+/** What `GET integration/bot` answers: the platform's defaults, with a test's own changes on top. */
+function botConfig(overrides: BotConfigInput = {}): BotConfig {
+  return {
+    bot: { id: "bot-1", name: "前台 Bot" },
+    currencyName: "猫粮",
+    billingEnabled: true,
+    staff: [],
+    door: { id: "door-1", name: "大门" },
+    mahjongTables: [],
+    ...overrides,
+    settings: {
+      playerCommands: "all",
+      readOnlyNotice: "请扫码操作",
+      staffCommands: true,
+      powerOffStaffOnly: false,
+      receiptsToStaff: false,
+      idleChannelIds: [],
+      idleReminderMinutes: 5,
+      watchHomeAssistant: true,
+      ...overrides.settings,
+    },
+  };
+}
+
+const mahjongTable = { id: "table-a", name: "🀄️ 大洋化学", aliases: ["a", "四麻A"], capacity: 4 };
 
 function createMockKoishiContext(registered: Map<string, RegisteredCommand>) {
   return {
@@ -39,10 +67,21 @@ function createLoggedMockKoishiContext(
   };
 }
 
-function createDefaultClient() {
+function createDefaultClient(bot: BotConfigInput = {}) {
   const calls: any[] = [];
   return {
     calls,
+    /** What the bot is told about itself; a test may replace it. */
+    bot: botConfig(bot) as BotConfig | PrismBotClientError,
+    /** The tables `GET integration/mahjong-tables` reports. */
+    tables: [] as any[],
+    /** What the mahjong command answers. */
+    mahjong: { capacity: 4, seats: [{ playerId: "player-1", name: "Neri", mine: true, playing: false }] } as any,
+    async getBotConfig() {
+      calls.push(["getBotConfig"]);
+      if (this.bot instanceof PrismBotClientError) throw this.bot;
+      return this.bot;
+    },
     httpTimings: [{ ms: 812.4, serverMs: 31, colo: "HKG" }, { ms: 205.2, serverMs: 29, colo: "HKG" }],
     async timeWalletOverHttp(input: unknown) {
       calls.push(["timeWalletOverHttp", input]);
@@ -64,8 +103,8 @@ function createDefaultClient() {
       calls.push(["resolveOrRegisterIdentity", input]);
       return { id: "player-1", displayName: "Neri", status: "active" };
     },
-    async startSessionByIdentity(input: unknown, body?: unknown) {
-      calls.push(["startSessionByIdentity", input, body]);
+    async startSessionByIdentity(input: unknown) {
+      calls.push(["startSessionByIdentity", input]);
       return {
         session: {
           id: "session-1",
@@ -73,7 +112,16 @@ function createDefaultClient() {
           startedAt: "2026-06-07T10:00:00.000Z",
           status: "active",
         },
+        created: true,
       };
+    },
+    async mahjongByIdentity(input: unknown, table: string, action: string) {
+      calls.push(["mahjongByIdentity", input, table, action]);
+      return { mahjong: this.mahjong };
+    },
+    async listMahjongTables() {
+      calls.push(["listMahjongTables"]);
+      return { tables: this.tables };
     },
     async previewCheckoutByIdentity(input: unknown) {
       calls.push(["previewCheckoutByIdentity", input]);
@@ -128,10 +176,6 @@ function createDefaultClient() {
         wallet: { balanceBefore: 100, balanceAfter: 78 },
       };
     },
-    async stopSessionByIdentity(input: unknown, sessionId: string) {
-      calls.push(["stopSessionByIdentity", input, sessionId]);
-      return {};
-    },
     async getWalletByIdentity(input: unknown) {
       calls.push(["getWalletByIdentity", input]);
       return {
@@ -167,28 +211,19 @@ function createDefaultClient() {
       calls.push(["redeemCodeByIdentity", input, code]);
       return { grantedAssets: [{ assetName: "Coupon", quantity: 1 }] };
     },
-    async listActiveSessions() {
-      calls.push(["listActiveSessions"]);
+    async roster(name?: string) {
+      calls.push(["roster", name]);
       return {
-        sessions: [
-          {
-            id: "session-1",
-            playerId: "player-1",
-            playerDisplayName: "Player 296",
-            startedAt: "2026-07-08T11:38:31.000Z",
-            label: "音游区间",
-            identities: [{ provider: "onebot", subject: "2034994588" }],
-          },
-        ],
+        total: 1,
+        groups: [{
+          kind: "plan", id: "music", name: "音游区间",
+          members: [{ playerId: "player-1", displayName: "Player 296", identities: [{ provider: "onebot", subject: "2034994588" }] }],
+        }],
       };
     },
     async listDeviceStates() {
       calls.push(["listDeviceStates"]);
       return { deviceStates: [{ deviceId: "ai-1", label: "maimai", state: { state: "on" } }] };
-    },
-    async adjustAssetsByIdentity(identity: unknown, adjustments: unknown[]) {
-      calls.push(["adjustAssetsByIdentity", identity, adjustments]);
-      return { holdings: [] };
     },
     async adjustWalletByIdentity(identity: unknown, amount: number, reason: string) {
       calls.push(["adjustWalletByIdentity", identity, amount, reason]);
@@ -218,10 +253,16 @@ function createDefaultClient() {
   };
 }
 
-/** A scripted PRiSM end of the bot connection. */
-function fakePlatform(answer: (frame: any) => { status: number; body: unknown } | null | Promise<{ status: number; body: unknown } | null>) {
+type Reply = { status: number; body: unknown } | null;
+
+/**
+ * A scripted PRiSM end of the bot connection. It answers `GET integration/bot`
+ * with `settings` (a status and body to refuse it), and everything else with `answer`.
+ */
+function fakePlatform(answer: (frame: any) => Reply | Promise<Reply>, initial: BotConfigInput = {}) {
   const opened: Array<{ url: string; headers: Record<string, string> }> = [];
   const frames: any[] = [];
+  const state = { settings: botConfig(initial) as BotConfig | { status: number; body: unknown } };
   let listeners: Record<string, Array<(event: any) => void>> = {};
   const emit = (type: string, event: any) => { for (const listener of listeners[type] ?? []) listener(event); };
   const socket = {
@@ -235,7 +276,11 @@ function fakePlatform(answer: (frame: any) => { status: number; body: unknown } 
       const frame = JSON.parse(data);
       frames.push(frame);
       if (frame.type !== "request") return;
-      Promise.resolve(answer(frame)).then((reply) => {
+      const settings = state.settings;
+      const reply = frame.path === "integration/bot"
+        ? ("status" in settings ? settings : { status: 200, body: settings })
+        : answer(frame);
+      Promise.resolve(reply).then((reply) => {
         if (reply) emit("message", { data: JSON.stringify({ type: "response", id: frame.id, ...reply }) });
       });
     },
@@ -252,7 +297,20 @@ function fakePlatform(answer: (frame: any) => { status: number; body: unknown } 
     factory,
     opened,
     frames,
-    requests: () => frames.filter((frame) => frame.type === "request"),
+    /** Every request but the bot reading its settings. */
+    requests: () => frames.filter((frame) => frame.type === "request" && frame.path !== "integration/bot"),
+    /** How often the bot read its settings. */
+    settingsReads: () => frames.filter((frame) => frame.type === "request" && frame.path === "integration/bot").length,
+    hellos: () => frames.filter((frame) => frame.type === "hello"),
+    /** The shop changes the bot's settings and tells it so. */
+    change(settings: BotConfigInput) {
+      state.settings = botConfig(settings);
+      emit("message", { data: JSON.stringify({ type: "config.changed" }) });
+    },
+    /** The shop disables the bot, or the platform refuses its settings otherwise. */
+    refuse(status: number, code: string, message: string) {
+      state.settings = { status, body: { error: { code, message } } };
+    },
     push(event: string, data: unknown) { emit("message", { data: JSON.stringify({ type: "event", event, data }) }); },
     /** Any frame the platform could send, for what is not an event. */
     pushFrame(frame: unknown) { emit("message", { data: JSON.stringify(frame) }); },
@@ -263,7 +321,6 @@ function fakePlatform(answer: (frame: any) => { status: number; body: unknown } 
 }
 
 const connection = { shopCode: "shop-a", baseUrl: "https://prism.test", integrationToken: "test-token" };
-const basics = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮" };
 
 describe("applyPrismKoishiPlugin", () => {
   it("reports an inactive player with the standard failure wording", () => {
@@ -279,7 +336,7 @@ describe("applyPrismKoishiPlugin", () => {
     const registered = new Map<string, RegisteredCommand>();
     const warnings: unknown[][] = [];
     applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, warnings), {
-      ...basics, ...connection,
+      ...connection,
       socket: () => { throw new TypeError("connect wss://prism.test/api/v1/shops/shop-a/integration/ws failed"); },
     });
     const result = await registered.get("wallet [target:user]")?.action({ session: { userId: "player-1" } });
@@ -291,7 +348,7 @@ describe("applyPrismKoishiPlugin", () => {
   it("renders failures in Chinese without exposing English status text", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const platform = fakePlatform(() => ({ status: 404, body: "NOT FOUND" }));
-    applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, []), { ...basics, ...connection, socket: platform.factory });
+    applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, []), { ...connection, socket: platform.factory });
     await platform.connected();
     const result = await registered.get("wallet [target:user]")?.action({ session: { userId: "player-1" } });
     expect(result).toBe("操作失败，请稍后再试。");
@@ -307,26 +364,18 @@ describe("applyPrismKoishiPlugin", () => {
     ))).toBe("操作失败，请稍后再试。");
   });
 
-  it("resolves structured mahjong table configuration", () => {
-    const tables = resolveMahjongTableConfigs([
-      { displayName: "雀友四口麻将机", aliases: ["a", "四麻A"], pricingConfigIds: ["pricing-a"] },
-    ]);
-    expect(tables.get("a")).toMatchObject({ tableId: "雀友四口麻将机", displayName: "雀友四口麻将机", pricingConfigIds: ["pricing-a"] });
-    expect(tables.get("四麻A")?.tableId).toBe("雀友四口麻将机");
+  it("configures only how to reach the shop", () => {
+    const keys = Object.keys((Config as any).dict ?? {});
+    expect(keys.sort()).toEqual(["baseUrl", "integrationToken", "shopCode"]);
+    for (const key of keys) expect((Config as any).dict[key].meta?.required).toBe(true);
+    expect(Config({ ...connection })).toEqual(connection);
   });
+
   it("registers all player commands and basic flows work", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      loginPricingConfigIds: ["pricing-music-standard"],
-      loginSessionLabel: "音游区间",
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    };
+    const config: PrismKoishiPluginConfig = { client: client as any };
 
     applyPrismKoishiPlugin(ctx, config);
 
@@ -337,7 +386,7 @@ describe("applyPrismKoishiPlugin", () => {
       "入场 [target:user]",
       "mahjong <tableId>",
       "上桌 [tableId]",
-      "下桌",
+      "下桌 [tableId]",
       "麻将列表",
       "logout [target:user]",
       "billing [target:user]",
@@ -346,7 +395,7 @@ describe("applyPrismKoishiPlugin", () => {
       "ws测速 [count:number]",
       "versions",
       "items [target:user]",
-      "list",
+      "list [name:text]",
       "show [deviceId]",
       "history [target:user]",
       "lock",
@@ -389,7 +438,7 @@ describe("applyPrismKoishiPlugin", () => {
     expect(billingResult).not.toContain("————————————");
     expect(billingResult).not.toContain("　｜　");
 
-    const listResult = await registered.get("list")?.action({ session: { userId: "123456" } });
+    const listResult = await registered.get("list [name:text]")?.action({ session: { userId: "123456" } });
     expect(listResult).toContain("[总计 1 人]");
     expect(listResult).toContain("Player 296");
 
@@ -410,13 +459,7 @@ describe("applyPrismKoishiPlugin", () => {
     client.getVersion = async () => {
       throw new Error("offline");
     };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     await expect(registered.get("versions")?.action({ session: { userId: "123456" } })).resolves.toBe(
       `PRiSM 版本信息\nBot：${version}\n后端：不可用`,
@@ -428,24 +471,23 @@ describe("applyPrismKoishiPlugin", () => {
     const platform = fakePlatform((frame) => frame.path === "version"
       ? { status: 200, body: { service: "prism-api", version: "1.0.0", revision: "abc123" } }
       : null);
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...basics, ...connection, socket: platform.factory });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...connection, socket: platform.factory });
     await platform.connected();
     await expect(registered.get("versions")?.action({ session: { userId: "123456" } })).resolves.toContain("后端：1.0.0 (abc123)");
   });
 
-  it("quotes command replies and notifies configured logout recipients", async () => {
+  it("quotes command replies and sends receipts to staff on the same platform", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    const broadcasts: Array<[string[], string]> = [];
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      staffUserIds: ["staff-1"],
-      logoutNotifyUserIds: ["staff-1", "audit-1"],
-      client: client as any,
+    const client = createDefaultClient({
+      settings: { receiptsToStaff: true },
+      staff: [
+        { provider: "onebot", subject: "staff-1" },
+        { provider: "onebot", subject: "audit-1" },
+        { provider: "telegram", subject: "staff-1" },
+      ],
     });
+    const broadcasts: Array<[string[], string]> = [];
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
     const bot = {
       async broadcast(userIds: string[], content: string) {
         broadcasts.push([userIds, content]);
@@ -469,20 +511,14 @@ describe("applyPrismKoishiPlugin", () => {
     expect(broadcasts[0][1]).not.toContain("quote");
   });
 
-  it("notifies configured logout recipients when overwrite command is executed", async () => {
+  it("sends staff the receipt when overwrite command is executed", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    const broadcasts: Array<[string[], string]> = [];
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      enableStaffCommands: true,
-      staffUserIds: ["staff-1"],
-      logoutNotifyUserIds: ["staff-1", "audit-1"],
-      client: client as any,
+    const client = createDefaultClient({
+      settings: { receiptsToStaff: true },
+      staff: [{ provider: "onebot", subject: "staff-1" }, { provider: "onebot", subject: "audit-1" }],
     });
+    const broadcasts: Array<[string[], string]> = [];
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
     const bot = {
       async broadcast(userIds: string[], content: string) {
         broadcasts.push([userIds, content]);
@@ -535,8 +571,7 @@ describe("applyPrismKoishiPlugin", () => {
         wallet: { balanceBefore: 100, balanceAfter: 90 },
       };
     };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮", client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
     const logout = registered.get("logout [target:user]")!.action;
     const first = logout({ session: { userId: "123456", senderName: "Tester" } });
     const second = logout({ session: { userId: "123456", senderName: "Tester" } });
@@ -563,10 +598,7 @@ describe("applyPrismKoishiPlugin", () => {
         wallet: { balanceBefore: 100, balanceAfter: 90 },
       };
     };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true, defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime", currencyName: "猫粮", client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
     const logout = registered.get("logout [target:user]")!.action;
     const onebot = logout({ session: { platform: "onebot", userId: "10086" } });
     const telegram = logout({ session: { platform: "telegram", userId: "10086" } });
@@ -580,16 +612,8 @@ describe("applyPrismKoishiPlugin", () => {
   it("registers administrator shortcuts with target authorization and staff writes", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
-    const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      enableStaffCommands: true,
-      staffUserIds: ["admin"],
-      client: client as any,
-    };
+    const client = createDefaultClient({ staff: [{ provider: "onebot", subject: "admin" }] });
+    const config: PrismKoishiPluginConfig = { client: client as any };
     const adminContext = { session: { userId: "admin", senderName: "Admin" } };
     const playerContext = { session: { userId: "player", senderName: "Player" } };
 
@@ -615,33 +639,25 @@ describe("applyPrismKoishiPlugin", () => {
     await expect(registered.get("overwrite <target:user> <amount:number> [reason:text]")?.action(adminContext, "target-qq", "30")).resolves.toContain("覆盖结账成功");
 
     expect(client.calls).toContainEqual(["adjustWalletByIdentity", {
-      provider: "onebot", subject: "target-qq", autoRegister: true, displayName: "target-qq",
+      provider: "onebot", subject: "target-qq", displayName: "target-qq",
     }, 10, "Koishi 管理员增加余额"]);
     expect(client.calls).toContainEqual(["adjustWalletByIdentity", {
-      provider: "onebot", subject: "target-qq", autoRegister: true, displayName: "target-qq",
+      provider: "onebot", subject: "target-qq", displayName: "target-qq",
     }, -3, "Koishi 管理员扣除余额"]);
     expect(client.calls).toContainEqual(["checkoutWithOverrideByIdentity", {
-      provider: "onebot", subject: "target-qq", autoRegister: true, displayName: "target-qq",
+      provider: "onebot", subject: "target-qq", displayName: "target-qq",
     }, 30, "管理员调价"]);
     expect(client.calls).toContainEqual(["startSessionByIdentity", {
-      provider: "onebot", subject: "262661418", autoRegister: true, displayName: "262661418",
-    }, { entry: true }]);
+      provider: "onebot", subject: "262661418", displayName: "262661418",
+    }]);
   });
 
-  it("denies targeted administrator shortcuts when the staff whitelist is empty", async () => {
+  it("denies targeted administrator shortcuts when the shop has no staff identities", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
-    const client = createDefaultClient();
+    const client = createDefaultClient({ staff: [] });
 
-    applyPrismKoishiPlugin(ctx, {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      enableStaffCommands: true,
-      staffUserIds: [],
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(ctx, { client: client as any });
 
     await expect(
       registered.get("login [target:user]")?.action({ session: { userId: "unlisted-admin" } }, "target-qq"),
@@ -653,114 +669,71 @@ describe("applyPrismKoishiPlugin", () => {
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
     const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
       resolveDisplayName: () => Promise.resolve("🎀hanahana🎀"),
       client: client as any,
     };
     applyPrismKoishiPlugin(ctx, config);
-    const listResult = await registered.get("list")?.action({ session: { userId: "123456" } });
+    const listResult = await registered.get("list [name:text]")?.action({ session: { userId: "123456" } });
     expect(listResult).toContain("🎀hanahana🎀");
   });
 
-  it("groups list by music players and mahjong tables", async () => {
+  it("prints the platform's roster: each person once, resources with their head count and capacity", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const ctx = createMockKoishiContext(registered);
-    const client = createDefaultClient();
-    client.resolveOrRegisterIdentity = async (input: { subject: string }) => ({
-      id: `player-${input.subject}`,
-      displayName: `Player ${input.subject}`,
-    });
-    client.listActiveSessions = async () => ({
-      sessions: [
-        { id: "music-1", playerId: "player-1", playerDisplayName: "Player 1", label: "音游区间", identities: [{ provider: "onebot", subject: "1" }] },
-        { id: "music-2", playerId: "player-2", playerDisplayName: "Player 2", label: "音游区间", identities: [{ provider: "onebot", subject: "2" }] },
-        { id: "music-3", playerId: "player-3", playerDisplayName: "Player 3", label: "音游区间", identities: [{ provider: "onebot", subject: "3" }] },
-        { id: "mahjong-3", playerId: "player-3", playerDisplayName: "Player 3", label: "🀄️ 大洋化学八口麻将机", identities: [{ provider: "onebot", subject: "3" }] },
-        { id: "mahjong-4", playerId: "player-4", playerDisplayName: "Player 4", label: "🀄️ 大洋化学八口麻将机", identities: [{ provider: "onebot", subject: "4" }] },
-        { id: "music-5", playerId: "player-5", playerDisplayName: "Player 5", label: "音游区间", identities: [{ provider: "onebot", subject: "5" }] },
-      ],
-    });
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      mahjongTableConfigs: [{ displayName: "🀄️ 大洋化学八口麻将机", aliases: ["a", "四麻A"], pricingConfigIds: ["pricing-mahjong-a"] }],
-      mahjongTableSize: 4,
-      resolveDisplayName: (subject) => `Player ${subject}`,
-      client: client as any,
-    };
-    applyPrismKoishiPlugin(ctx, config);
-
-    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "5", senderName: "Player 5" } }, "a")).resolves.toContain("补位成功");
-    const result = await registered.get("list")?.action({ session: { userId: "1" } });
-
-    expect(result).toContain("[总计 5 人]");
-    expect(result).toContain("音游区间 ( 3人 )：\n- Player 1, - Player 2, - Player 5");
-    expect(result).toContain("🀄️ 大洋化学八口麻将机 ( 2/4 )：\n- Player 3, - Player 4");
-
-    const machineList = await registered.get("麻将列表")?.action({ session: { userId: "1" } });
-    expect(machineList).toContain("🀄️ 麻将机列表（1 台）");
-    expect(machineList).toContain("🀄️ 大洋化学八口麻将机｜别名：a、四麻A｜游玩中 2/4");
-  });
-
-  it("groups players by their newest non-music session label", async () => {
-    const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    client.listActiveSessions = async () => ({
-      sessions: [
-        { id: "music-1", playerId: "music", playerDisplayName: "Music", label: "音游区间", startedAt: "2026-07-10T10:00:00.000Z" },
-        { id: "music-2", playerId: "room", playerDisplayName: "Room", label: "音游区间", startedAt: "2026-07-10T10:00:00.000Z" },
-        { id: "room-1", playerId: "room", playerDisplayName: "Room", label: "包间", startedAt: "2026-07-10T11:00:00.000Z" },
-        { id: "room-2", playerId: "room", playerDisplayName: "Room", label: "活动区", startedAt: "2026-07-10T12:00:00.000Z" },
-      ],
-    });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
-      loginSessionLabel: "音游区间", client: client as any,
-    });
-    const result = await registered.get("list")?.action({ session: { userId: "music" } });
-    expect(result).toContain("音游区间 ( 1人 )：\n- Music");
-    expect(result).toContain("活动区 ( 1人 )：\n- Room");
-    expect(result).not.toContain("包间 ( 1人 )");
-  });
-
-  it("uses a later session backend name after an earlier identity fallback", async () => {
-    const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    client.listActiveSessions = async () => ({
-      sessions: [
-        { id: "music-1", playerId: "player-1", label: "音游区间", identities: [{ provider: "onebot", subject: "first-subject" }] },
-        { id: "music-2", playerId: "player-1", playerDisplayName: "Later backend name", label: "音游区间" },
+    const client = createDefaultClient({ mahjongTables: [mahjongTable] });
+    const member = (n: number, name?: string) => ({ playerId: `player-${n}`, displayName: name ?? `后台 ${n}`, identities: [{ provider: "onebot", subject: String(n) }] });
+    client.roster = async () => ({
+      total: 6,
+      groups: [
+        { kind: "plan", id: "music", name: "音乐游戏", members: [member(1), member(2)] },
+        { kind: "resource", id: "cab", name: "maimai", capacity: 2, members: [member(5)] },
+        { kind: "resource", id: "table-a", name: "🀄️ 大洋化学", capacity: 4, members: [member(3), member(4), member(6, "等位玩家")] },
       ],
     });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
+      resolveDisplayName: (subject) => (subject === "6" ? null : `Player ${subject}`),
       client: client as any,
     });
 
-    const result = await registered.get("list")?.action({ session: { userId: "1" } });
+    const result = await registered.get("list [name:text]")?.action({ session: { userId: "1" } });
+    expect(result).toBe([
+      "[总计 6 人]",
+      "\n音乐游戏 ( 2人 )：\n- Player 1, - Player 2",
+      "\nmaimai ( 1/2 )：\n- Player 5",
+      "\n🀄️ 大洋化学 ( 3/4 )：\n- Player 3, - Player 4, - 等位玩家",
+    ].join("\n"));
+  });
 
-    expect(result).toContain("- Later backend name");
-    expect(result).not.toContain("- first-subject");
+  it("lists one resource or one plan by name, and says when nothing has that name", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    client.roster = async (name?: string) => {
+      if (name === "大厅") throw new PrismBotClientError("找不到「大厅」", "ROSTER_TARGET_NOT_FOUND", 404, null);
+      return name === "maimai"
+        ? { total: 0, groups: [{ kind: "resource", id: "cab", name: "maimai", capacity: 2, members: [] }] }
+        : { total: 1, groups: [{ kind: "plan", id: "base", name: "基础", members: [{ playerId: "a", displayName: "A", identities: [] }] }] };
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    const list = registered.get("list [name:text]")!;
+    await expect(list.action({ session: { userId: "1" } }, "基础")).resolves.toBe("[总计 1 人]\n\n基础 ( 1人 )：\n- A");
+    await expect(list.action({ session: { userId: "1" } }, "maimai")).resolves.toBe("maimai ( 0/2 )");
+    await expect(list.action({ session: { userId: "1" } }, "大厅")).resolves.toBe("找不到「大厅」");
+  });
+
+  it("asks for no tables when the shop has none", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    await registered.get("list [name:text]")?.action({ session: { userId: "1" } });
+    expect(client.calls.some((call) => call[0] === "listMahjongTables")).toBe(false);
+    expect(client.calls.some((call) => call[0] === "roster")).toBe(true);
+    await expect(registered.get("麻将列表")!.action({ session: { userId: "1" } })).resolves.toBe("当前没有配置任何麻将机。");
   });
 
   it("shows device states and power commands", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    };
+    const config: PrismKoishiPluginConfig = { client: client as any };
     applyPrismKoishiPlugin(ctx, config);
     const list = await registered.get("show [deviceId]")?.action({ session: { userId: "123456" } });
     expect(list).toContain("maimai: on");
@@ -800,17 +773,29 @@ describe("applyPrismKoishiPlugin", () => {
         payload: { temporaryPassword: "12345678" },
       },
     });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     await expect(registered.get("lock")?.action({ session: { userId: "123456" } })).resolves.toBe(
       "🔑 临时门锁密码：12345678\n有效期：3 分钟",
     );
+  });
+
+  it("opens the door the bot's settings name, and says so when there is none", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient({ door: { id: "door-7", name: "侧门" } });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    await registered.get("lock")?.action({ session: { userId: "123456" } });
+    expect(client.calls).toContainEqual(["requestDeviceCommandByIdentity", expect.anything(), {
+      type: "door.open",
+      target: { kind: "facility", ref: "door-7" },
+    }]);
+
+    client.bot = botConfig({ door: null });
+    const doorless = new Map<string, RegisteredCommand>();
+    applyPrismKoishiPlugin(createMockKoishiContext(doorless), { client: client as any });
+    client.calls.length = 0;
+    await expect(doorless.get("lock")!.action({ session: { userId: "123456" } })).resolves.toBe("🔑 本店还没有设置 Bot 开的门");
+    expect(client.calls.some((call) => call[0] === "requestDeviceCommandByIdentity")).toBe(false);
   });
 
   it("does not report a password when TTLock generation fails", async () => {
@@ -828,13 +813,7 @@ describe("applyPrismKoishiPlugin", () => {
         },
       },
     });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     const result = await registered.get("lock")?.action({ session: { userId: "123456" } });
     expect(result).toBe("🔑 开门失败，请稍后再试");
@@ -851,13 +830,7 @@ describe("applyPrismKoishiPlugin", () => {
         { deviceId: "object", label: "旧对象格式", state: { state: "on" } },
       ],
     });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     const result = await registered.get("show [deviceId]")?.action({
       session: { userId: "player-1" },
@@ -870,13 +843,7 @@ describe("applyPrismKoishiPlugin", () => {
     const registered = new Map<string, RegisteredCommand>();
     const warnings: unknown[][] = [];
     const client = createDefaultClient();
-    applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, warnings), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, warnings), { client: client as any });
 
     client.requestDeviceCommandByIdentity = async () => {
       throw new PrismBotClientError("Machine ref was not found.", "DEVICE_NOT_FOUND", 400, {});
@@ -928,13 +895,7 @@ describe("applyPrismKoishiPlugin", () => {
     const warnings: unknown[][] = [];
     const ctx = createLoggedMockKoishiContext(registered, warnings);
     const client = createDefaultClient();
-    applyPrismKoishiPlugin(ctx, {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(ctx, { client: client as any });
 
     // Mock execution error from server
     client.requestDeviceCommandByIdentity = async () => ({
@@ -968,13 +929,7 @@ describe("applyPrismKoishiPlugin", () => {
         {},
       );
     };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     const context = { session: { userId: "player-1" } };
     await expect(registered.get("on <deviceRef>")?.action(context, "maimai")).resolves.toBe(
@@ -999,13 +954,7 @@ describe("applyPrismKoishiPlugin", () => {
         originalError,
       );
     };
-    applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, warnings), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createLoggedMockKoishiContext(registered, warnings), { client: client as any });
 
     const result = await registered.get("on <deviceRef>")?.action(
       { session: { userId: "player-1" } },
@@ -1017,18 +966,14 @@ describe("applyPrismKoishiPlugin", () => {
     expect(warnings).toEqual([["PRiSM Bot command failed", originalError]]);
   });
 
-  it("supports administrator-only power commands", async () => {
+  it("supports staff-only power off", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      powerCommandsAdminOnly: true,
-      staffUserIds: ["admin-1"],
-      client: client as any,
-    });
+    const client = createDefaultClient({ settings: { powerOffStaffOnly: true }, staff: [{ provider: "onebot", subject: "admin-1" }] });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+
+    // A player may still switch on, but not off.
+    await expect(registered.get("on <deviceRef>")?.action({ session: { userId: "player-1" } }, "maimai")).resolves.toContain("启动成功");
+    await expect(registered.get("off <deviceRef>")?.action({ session: { userId: "player-1" } }, "maimai")).resolves.toBe("关闭失败，权限不足");
 
     await expect(registered.get("on <deviceRef>")?.action(
       { session: { userId: "admin-1" } },
@@ -1060,13 +1005,7 @@ describe("applyPrismKoishiPlugin", () => {
         payload: { deviceLabel: "所有设备" },
       },
     });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     const onResult = await registered.get("on <deviceRef>")?.action({ session: { userId: "123" } }, "all");
     const offResult = await registered.get("off <deviceRef>")?.action({ session: { userId: "123" } }, "all");
@@ -1075,252 +1014,100 @@ describe("applyPrismKoishiPlugin", () => {
     expect(offResult).toBe("🛑 所有设备 关闭成功");
   });
 
-  it("rejects mahjong seating before the player enters", async () => {
-    const client = createDefaultClient();
-    client.listActiveSessions = async () => ({ sessions: [] });
+  it("seats a player at a table the bot's settings name, by name or alias", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      mahjongTableConfigs: [{ displayName: "🀄️ M.LEAGUE联名比赛专用机", aliases: ["a", "四麻A"], pricingConfigIds: ["pricing-mahjong-a"] }],
-      mahjongTableSize: 4,
-      client: client as any,
-    };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
+    const client = createDefaultClient({ mahjongTables: [mahjongTable] });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    const hanahana = { session: { userId: "2034994588", senderName: "hanahana" } };
 
-    await expect(
-      registered.get("上桌 [tableId]")?.action(
-        { session: { userId: "2034994588", senderName: "hanahana" } },
-        "a",
-      ),
-    ).resolves.toContain("请先入场");
-    expect(client.calls.filter((call) => call[0] === "startSessionByIdentity")).toHaveLength(0);
+    await expect(registered.get("上桌 [tableId]")!.action(hanahana, "不存在")).resolves.toContain("未找到麻将桌「不存在」");
+    await expect(registered.get("上桌 [tableId]")!.action(hanahana)).resolves.toContain("请指定麻将桌");
+    expect(client.calls.some((call) => call[0] === "mahjongByIdentity")).toBe(false);
+
+    // A player need not enter first: the platform starts billing when the table fills.
+    await expect(registered.get("上桌 [tableId]")!.action(hanahana, "四麻a")).resolves.toBe(
+      "已加入 🀄️ 大洋化学，当前 1/4 人，满 4 人开始计费。",
+    );
+    expect(client.calls).toContainEqual(["mahjongByIdentity", { provider: "onebot", subject: "2034994588", displayName: "hanahana" }, "table-a", "join"]);
+
+    client.mahjong = {
+      capacity: 4,
+      seats: ["1", "2", "3", "4"].map((id) => ({ playerId: `player-${id}`, name: id, mine: id === "4", playing: true })),
+    };
+    await expect(registered.get("mahjong <tableId>")!.action(hanahana, "🀄️ 大洋化学")).resolves.toBe(
+      "已加入 🀄️ 大洋化学，麻将计费已开始。当前 4/4 人。",
+    );
   });
 
-  it("recognizes canonical platform entry sessions for Mahjong and roster grouping", async () => {
+  it("relays why the platform would not seat a player", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    client.listActiveSessions = async () => ({ sessions: [{ id: "entry-1", playerId: "player-1", label: "entry", identities: [{ provider: "onebot", subject: "2034994588" }] }] });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), { autoRegister: true, defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime", currencyName: "猫粮", loginSessionLabel: "音乐游戏",
-      mahjongTableConfigs: [{ displayName: "麻将", aliases: ["a"], pricingConfigIds: ["mahjong"] }], client: client as any,
-    });
-    const context = { session: { userId: "2034994588", senderName: "Player" } };
-    expect(await registered.get("list")?.action(context)).toContain("音乐游戏");
-    expect(await registered.get("上桌 [tableId]")?.action(context, "a")).toContain("已加入");
+    const client = createDefaultClient({ mahjongTables: [mahjongTable] });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    const join = (code: string, message: string, status = 409) => {
+      client.mahjongByIdentity = async () => { throw new PrismBotClientError(message, code, status, { error: { code, message } }); };
+      return registered.get("上桌 [tableId]")!.action({ session: { userId: "1" } }, "a");
+    };
+    await expect(join("MAHJONG_TABLE_FULL", "已满桌")).resolves.toBe("「🀄️ 大洋化学」已满桌，请等待本局结束后再上桌。");
+    await expect(join("MAHJONG_ALREADY_SEATED", "请先从当前麻将桌下桌")).resolves.toBe("你已经在另一张麻将桌上，请先 /下桌。");
+    await expect(join("MAHJONG_TABLE_NOT_FOUND", "没有找到这张麻将桌", 404)).resolves.toContain("未找到麻将桌「a」");
+    await expect(join("PLAYER_SESSION_OUTSIDE_BILLABLE_TIME", "当前不在麻将计费时段")).resolves.toBe("上桌失败，当前不在麻将计费时段");
+    // A server fault is not relayed.
+    await expect(join("INTERNAL_ERROR", "stack trace", 500)).resolves.toBe("操作失败，请稍后再试。");
   });
 
-  it("registers and runs mahjong commands", async () => {
+  it("finds the table a player sits at to leave it", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const ctx = createMockKoishiContext(registered);
-    const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      mahjongTableConfigs: [{ displayName: "🀄️ M.LEAGUE联名比赛专用机", aliases: ["a", "四麻A"], pricingConfigIds: ["pricing-mahjong-a"] }],
-      mahjongTableSize: 4,
-      client: client as any,
-    };
-    applyPrismKoishiPlugin(ctx, config);
+    const client = createDefaultClient({ mahjongTables: [mahjongTable, { id: "table-b", name: "B 桌", aliases: ["b"], capacity: 4 }] });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    const player = { session: { userId: "1" } };
 
-    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588", senderName: "hanahana" } }, "不存在")).resolves.toContain("未找到麻将桌「不存在」");
-    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588", senderName: "hanahana" } })).resolves.toContain("请指定麻将桌");
-    const joinResult = await registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588", senderName: "hanahana" } }, "a");
-    expect(joinResult).toContain("已加入 🀄️ M.LEAGUE联名比赛专用机");
-    expect(joinResult).toContain("1/4 人");
+    await expect(registered.get("下桌 [tableId]")!.action(player)).resolves.toBe("你当前未在任何麻将桌上。");
+    expect(client.calls.some((call) => call[0] === "mahjongByIdentity")).toBe(false);
 
-    const machineList = await registered.get("麻将列表")?.action({ session: { userId: "2034994588" } });
-    expect(machineList).toContain("🀄️ 麻将机列表（1 台）");
-    expect(machineList).toContain("🀄️ M.LEAGUE联名比赛专用机｜别名：a、四麻A｜等位 1/4");
+    client.tables = [
+      { id: "table-b", name: "B 桌", aliases: ["b"], capacity: 4, seats: [{ playerId: "player-9", name: "9", playing: false }] },
+      { ...mahjongTable, seats: [
+        { playerId: "player-1", name: "Neri", playing: true },
+        { playerId: "player-2", name: "2", playing: true },
+      ] },
+    ];
+    client.mahjong = { capacity: 4, seats: [{ playerId: "player-2", name: "2", mine: false, playing: true }] };
+    await expect(registered.get("下桌 [tableId]")!.action(player, "b")).resolves.toBe("你当前不在 B 桌。");
+    await expect(registered.get("下桌 [tableId]")!.action(player)).resolves.toBe("已离开 🀄️ 大洋化学，麻将计费已停止。当前还剩 1/4 人。");
+    expect(client.calls).toContainEqual(["mahjongByIdentity", expect.objectContaining({ subject: "1" }), "table-a", "leave"]);
 
-    const leaveResult = await registered.get("下桌")?.action({ session: { userId: "2034994588", senderName: "hanahana" } });
-    expect(leaveResult).toContain("已离开");
-  });
-
-  it("synchronizes mahjong state from backend active sessions", async () => {
-    const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
-      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 1, client: client as any,
-    };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
-    await registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588" } }, "a");
-    client.listActiveSessions = async () => ({ sessions: [{ id: "music-session", playerId: "player-1", label: "音游区间", identities: [{ provider: "onebot", subject: "2034994588" }] }] });
-    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "2034994588" } }, "a")).resolves.toContain("大洋化学已满，麻将计费已开始");
-
-    const recovered = new Map<string, RegisteredCommand>();
-    client.listActiveSessions = async () => ({ sessions: [{ id: "mahjong-session", playerId: "player-1", label: "大洋化学", identities: [{ provider: "onebot", subject: "2034994588" }] }] });
-    applyPrismKoishiPlugin(createMockKoishiContext(recovered), config);
-    await expect(recovered.get("下桌")?.action({ session: { userId: "2034994588" } })).resolves.toContain("已离开 大洋化学");
-    expect(client.calls).toContainEqual(["stopSessionByIdentity", expect.anything(), "mahjong-session"]);
-  });
-
-  it("evicts orphan waiting seats when player is externally checked out", async () => {
-    const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
-      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
-    };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
-
-    // Player joins the waiting queue (table has 0 active, so they land in waiting).
-    // The default client mock returns playerId "player-1" from resolveOrRegisterIdentity,
-    // so we match that in the session list.
-    client.listActiveSessions = async () => ({
-      sessions: [
-        { id: "entry-session", playerId: "player-1", label: "音游区间", identities: [{ provider: "onebot", subject: "77" }] },
-      ]
-    });
-    await registered.get("上桌 [tableId]")?.action({ session: { userId: "77" } }, "a");
-
-    // Confirm player appears in /list waiting area under the mahjong table
-    const listBefore = await registered.get("list")?.action({ session: { userId: "77" } });
-    expect(listBefore).toContain("大洋化学");
-
-    // Simulate external checkout: backend now reports no sessions for this player at all
-    client.listActiveSessions = async () => ({ sessions: [] });
-
-    // The next /list triggers syncMahjongTableStates which should evict the orphan
-    const listAfter = await registered.get("list")?.action({ session: { userId: "77" } });
-    expect(listAfter).not.toContain("大洋化学");
-  });
-
-  it("displays remaining player count on leave mid-game", async () => {
-    const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
-      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
-    };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
-
-    // Mock active sessions with 2 players
-    client.listActiveSessions = async () => ({
-      sessions: [
-        { id: "session-1", playerId: "player-1", label: "大洋化学", identities: [{ provider: "onebot", subject: "1" }] },
-        { id: "session-2", playerId: "player-2", label: "大洋化学", identities: [{ provider: "onebot", subject: "2" }] },
-      ]
-    });
-
-    const leaveResult = await registered.get("下桌")?.action({ session: { userId: "1" } });
-    expect(leaveResult).toContain("已离开 大洋化学，麻将计费已停止。当前还剩 1/4 人。");
-  });
-
-  it("does not report a free seat before the backend confirms Mahjong leave", async () => {
-    const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    let resolveStop!: () => void;
-    const stopped = new Promise<void>(resolve => { resolveStop = resolve; });
-    let stoppedInBackend = false;
-    client.listActiveSessions = async () => ({ sessions: stoppedInBackend ? [] : [
-      { id: "mahjong-1", playerId: "player-1", label: "大洋化学" },
-    ] });
-    client.stopSessionByIdentity = async () => {
-      await stopped;
-      stoppedInBackend = true;
-      return {};
-    };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime",
-      currencyName: "猫粮", mahjongTableSize: 1,
-      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["mahjong-rate"] }],
-      client: client as any,
-    });
-    const action = registered.get("下桌")!.action;
-    const leaving = action({ session: { userId: "1" } });
-    await new Promise(resolve => setTimeout(resolve, 0));
-    const tableBeforeStop = await registered.get("麻将列表")!.action({ session: { userId: "1" } });
-    expect(tableBeforeStop).toContain("游玩中 1/1");
-    resolveStop();
-    expect(await leaving).toContain("已离开 大洋化学");
-    expect(await registered.get("麻将列表")!.action({ session: { userId: "1" } }))
-      .toContain("空闲");
-  });
-
-  it("clears mahjong table state when a seated player uses /logout directly", async () => {
-    const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
-      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
-    };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
-
-    // Player is seated at the table (active session)
-    client.listActiveSessions = async () => ({
-      sessions: [
-        { id: "session-99", playerId: "player-99", label: "大洋化学", identities: [{ provider: "onebot", subject: "99" }] },
-      ]
-    });
-
-    // Trigger a /list so the table state is synced into memory
-    await registered.get("list")?.action({ session: { userId: "99" } });
-
-    // Now mock checkout result returning the same playerId
-    client.confirmCheckoutByIdentity = async () => ({
-      playerSettlement: { playerId: "player-99", subtotal: 0, total: 0, status: "settled", settledAt: new Date() },
-      settlements: [],
-      chargeItems: [],
-      adjustments: [],
-      checkoutAdjustments: [],
-      pricingCapAdjustments: [],
-      globalCapWindows: [],
-      assetLedgerEntries: [],
-      wallet: { balanceBefore: 0, balanceAfter: 0 },
-    });
-
-    // Player logs out directly without calling /下桌 first
-    await registered.get("logout")?.action({ session: { userId: "99", senderName: "TestPlayer", messageId: "m1" } });
-
-    // After logout, /list should no longer show them on the table
-    client.listActiveSessions = async () => ({ sessions: [] });
-    const listAfter = await registered.get("list")?.action({ session: { userId: "99" } });
-    expect(listAfter).not.toContain("大洋化学");
+    // Getting up does not check out; the platform says what still bills.
+    client.mahjongByIdentity = async () => ({ mahjong: client.mahjong, billing: { remaining: ["普通游玩"] } });
+    await expect(registered.get("下桌 [tableId]")!.action(player)).resolves.toBe(
+      "已离开 🀄️ 大洋化学，麻将计费已停止。当前还剩 1/4 人。\n仍在计费：普通游玩",
+    );
   });
 
   it("does not register legacy admin commands", () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      enableStaffCommands: true,
-      staffUserIds: [],
-      client: client as any,
-    };
-    applyPrismKoishiPlugin(ctx, config);
+    applyPrismKoishiPlugin(ctx, { client: client as any });
     expect([...registered.keys()].some((name) => name.startsWith("admin."))).toBe(false);
   });
 
-  it("denies staff commands when not enabled", async () => {
+  it("denies acting for others when the bot's settings turn staff commands off", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const ctx = createMockKoishiContext(registered);
-    const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    };
-    applyPrismKoishiPlugin(ctx, config);
-    const adminNames = [...registered.keys()].filter((name) => name.startsWith("admin."));
-    expect(adminNames).toEqual([]);
+    const client = createDefaultClient({ settings: { staffCommands: false }, staff: [{ provider: "onebot", subject: "admin" }] });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    const admin = { session: { userId: "admin" } };
+    await expect(registered.get("login [target:user]")!.action(admin, "target-qq")).resolves.toBe("员工命令未启用");
+    await expect(registered.get("add <target:user> <amount:number>")!.action(admin, "target-qq", "10")).resolves.toBe("员工命令未启用");
+    // Their own commands are not staff commands.
+    await expect(registered.get("login [target:user]")!.action(admin)).resolves.toBe("✅ 入场成功");
+    expect(client.calls.some((call) => call[0] === "adjustWalletByIdentity")).toBe(false);
   });
 
   it("fetches platform nickname via bot.getUser during login", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const ctx = createMockKoishiContext(registered);
     const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      client: client as any,
-    };
+    const config: PrismKoishiPluginConfig = { client: client as any };
     applyPrismKoishiPlugin(ctx, config);
 
     let getUserCalled = false;
@@ -1346,80 +1133,32 @@ describe("applyPrismKoishiPlugin", () => {
     expect(startSessionCall[1]).toEqual({
       provider: "onebot",
       subject: "qq-user-123",
-      autoRegister: true,
       displayName: "Dynamic QQ Nickname",
     });
   });
 
-  it("passes configured loginSessionLabel in the login request body", async () => {
+  it("tells a player already billing that they are in, instead of admitting them again", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const ctx = createMockKoishiContext(registered);
-    const client = createDefaultClient();
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      loginPricingConfigIds: ["pricing-music-standard"],
-      loginSessionLabel: "自定义标签",
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
+    const client = createDefaultClient({ staff: [{ provider: "onebot", subject: "admin" }] });
+    client.startSessionByIdentity = async (input: unknown) => {
+      client.calls.push(["startSessionByIdentity", input]);
+      return { session: { id: "session-1", playerId: "player-1" }, created: false, planName: "普通游玩" };
     };
-    applyPrismKoishiPlugin(ctx, config);
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
-    await expect(registered.get("login [target:user]")?.action({ session: { userId: "123456", senderName: "Tester" } })).resolves.toContain("✅ 入场成功");
-
-    const startSessionCall = client.calls.find((c) => c[0] === "startSessionByIdentity");
-    expect(startSessionCall).toBeDefined();
-    expect(startSessionCall[2]).toEqual({ entry: true, pricingConfigIds: ["pricing-music-standard"], label: "自定义标签" });
+    await expect(registered.get("login [target:user]")!.action({ session: { userId: "123456", senderName: "Tester" } })).resolves.toBe("您已在「普通游玩」中，无需重复入场");
+    await expect(registered.get("入场 [target:user]")!.action({ session: { userId: "admin" } }, "onebot:42")).resolves.toBe("用户 未知昵称（onebot:42） 已在「普通游玩」中，无需重复入场");
   });
 
-  it("marks Mahjong seats as separate activity sessions even when pricing rules overlap entry", async () => {
+  it("names the plans a start ended", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
-    client.listActiveSessions = async () => ({
-      sessions: [{ id: "entry-1", playerId: "player-1", label: "entry" }],
+    client.startSessionByIdentity = async () => ({
+      session: { id: "session-2", playerId: "player-1" }, created: true, planName: "普通游玩",
+      billing: { changed: true, created: true, started: ["普通游玩"], stopped: ["夜场"], kept: [] },
     });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true, defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime", currencyName: "猫粮",
-      mahjongTableSize: 1,
-      loginPricingConfigIds: ["shared-rule"],
-      mahjongTableConfigs: [
-        { displayName: "麻将 A 桌", aliases: ["a"], pricingConfigIds: ["shared-rule"] },
-      ],
-      client: client as any,
-    });
-    const result = await registered.get("上桌 [tableId]")!.action({
-      session: { platform: "onebot", userId: "10086" },
-    }, "a");
-    expect(result).toContain("麻将计费已开始");
-    expect(client.calls).toContainEqual([
-      "startSessionByIdentity",
-      expect.objectContaining({ provider: "onebot", subject: "10086" }),
-      { pricingConfigIds: ["shared-rule"], label: "麻将 A 桌", entry: false },
-    ]);
-  });
-
-  it("prevents duplicate login when backend reports DUPLICATE_SESSION_LABEL", async () => {
-    const registered = new Map<string, RegisteredCommand>();
-    const ctx = createMockKoishiContext(registered);
-    const client = createDefaultClient();
-    client.startSessionByIdentity = async () => {
-      throw new PrismBotClientError("Player already has an active session with label '音游区间'.", "DUPLICATE_SESSION_LABEL", 409, {});
-    };
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      loginSessionLabel: "音游区间",
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    };
-    applyPrismKoishiPlugin(ctx, config);
-
-    const result = await registered.get("login [target:user]")?.action({ session: { userId: "123456", senderName: "Tester" } });
-    expect(result).toContain("❌ 您已经处于入场状态");
-    expect(result).toContain("请勿重复发送入场命令");
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    await expect(registered.get("login [target:user]")!.action({ session: { userId: "123456" } })).resolves.toBe("✅ 入场成功\n结束方案：夜场");
   });
 
   it("renders a concise zero-cost checkout receipt", async () => {
@@ -1449,13 +1188,7 @@ describe("applyPrismKoishiPlugin", () => {
       assetLedgerEntries: [],
       wallet: { balanceBefore: 9791, balanceAfter: 9791 },
     });
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    };
+    const config: PrismKoishiPluginConfig = { client: client as any };
     applyPrismKoishiPlugin(ctx, config);
 
     const result = await registered.get("logout [target:user]")?.action({
@@ -1498,13 +1231,7 @@ describe("applyPrismKoishiPlugin", () => {
       assetLedgerEntries: [],
       wallet: { balanceBefore: 81, balanceAfter: 2 },
     });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     const result = await registered.get("logout [target:user]")?.action({
       session: { userId: "3202659259", senderName: "李育群" },
@@ -1544,13 +1271,7 @@ describe("applyPrismKoishiPlugin", () => {
       assetLedgerEntries: [],
       wallet: { balanceBefore: 10, balanceAfter: 0 },
     });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     const result = await registered.get("logout [target:user]")?.action({
       session: { userId: "123456", senderName: "Tester" },
@@ -1600,13 +1321,7 @@ describe("applyPrismKoishiPlugin", () => {
       assetLedgerEntries: [],
       wallet: { balanceBefore: 100, balanceAfter: 93 },
     });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     const result = await registered.get("logout [target:user]")?.action({
       session: { userId: "123456", senderName: "Tester" },
@@ -1652,13 +1367,7 @@ describe("applyPrismKoishiPlugin", () => {
       assetLedgerEntries: [],
       wallet: { balanceBefore: 0, balanceAfter: 0 },
     });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     const result = await registered.get("logout [target:user]")?.action({
       session: { userId: "1015929452", senderName: "月" },
@@ -1750,13 +1459,7 @@ describe("applyPrismKoishiPlugin", () => {
       assetLedgerEntries: [],
       wallet: { balanceBefore: 252, balanceAfter: 185 },
     });
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
 
     const result = await registered.get("logout [target:user]")?.action({
       session: { userId: "1075979543", senderName: "哈基はち" },
@@ -1810,13 +1513,7 @@ describe("applyPrismKoishiPlugin", () => {
       wallet: { balanceBefore: 42, balanceAfter: 12 },
       globalCapWindows: [],
     });
-    const config: PrismKoishiPluginConfig = {
-      autoRegister: true,
-      defaultDoorDeviceId: "front-door",
-      defaultScanProvider: "aime",
-      currencyName: "猫粮",
-      client: client as any,
-    };
+    const config: PrismKoishiPluginConfig = { client: client as any };
     applyPrismKoishiPlugin(ctx, config);
 
     const result = await registered.get("billing [target:user]")?.action({
@@ -1834,72 +1531,45 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).not.toContain("优惠后价格：");
   });
 
-  it("allows player swapping (fill empty seats) mid-game without affecting others", async () => {
+  it("answers billing commands with a notice in a shop that does not bill", async () => {
     const registered = new Map<string, RegisteredCommand>();
-    const client = createDefaultClient();
-    client.resolveOrRegisterIdentity = async (input: { subject: string }) => ({
-      id: `player-${input.subject}`,
-      displayName: `Player ${input.subject}`,
-    });
-    const config: PrismKoishiPluginConfig = { autoRegister: true, defaultDoorDeviceId: "front-door", defaultScanProvider: "aime", currencyName: "猫粮",
-      mahjongTableConfigs: [{ displayName: "大洋化学", aliases: ["a"], pricingConfigIds: ["pricing-mahjong-a"] }], mahjongTableSize: 4, client: client as any,
-    };
-    applyPrismKoishiPlugin(createMockKoishiContext(registered), config);
-
-    let currentSessions = [
-      { id: "session-1", playerId: "player-1", label: "大洋化学", identities: [{ provider: "onebot", subject: "1" }] },
-      { id: "session-2", playerId: "player-2", label: "大洋化学", identities: [{ provider: "onebot", subject: "2" }] },
-      { id: "session-3", playerId: "player-3", label: "大洋化学", identities: [{ provider: "onebot", subject: "3" }] },
-      { id: "session-4", playerId: "player-4", label: "大洋化学", identities: [{ provider: "onebot", subject: "4" }] },
-      { id: "entry-5", playerId: "player-5", label: "入场区间", identities: [{ provider: "onebot", subject: "5" }] },
-    ];
-    client.listActiveSessions = async () => ({ sessions: currentSessions });
-
-    // Table is 4/4 full, reject player 5
-    await expect(registered.get("上桌 [tableId]")?.action({ session: { userId: "5" } }, "a")).resolves.toContain("正在游玩中（4/4）");
-
-    // Player 4 leaves
-    const leaveResult = await registered.get("下桌")?.action({ session: { userId: "4" } });
-    expect(leaveResult).toContain("已离开 大洋化学");
-    currentSessions = currentSessions.filter(s => s.playerId !== "player-4");
-
-    // Player 5 joins to fill the seat (3/4 -> 4/4)
-    client.calls.length = 0;
-    const joinResult = await registered.get("上桌 [tableId]")?.action({ session: { userId: "5" } }, "a");
-    expect(joinResult).toContain("已加入 大洋化学，补位成功，麻将计费已开始。当前 4/4 人。");
-    expect(client.calls).toContainEqual(["startSessionByIdentity", expect.anything(), {
-      pricingConfigIds: ["pricing-mahjong-a"],
-      label: "大洋化学",
-      entry: false,
-    }]);
+    const client = createDefaultClient({ billingEnabled: false, mahjongTables: [mahjongTable] });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    const player = { session: { userId: "1" } };
+    for (const [name, args] of [
+      ["login [target:user]", []], ["logout [target:user]", []], ["billing [target:user]", []], ["wallet [target:user]", []],
+      ["上桌 [tableId]", ["a"]], ["下桌 [tableId]", []], ["麻将列表", []], ["list [name:text]", []],
+    ] as Array<[string, string[]]>) {
+      expect(await registered.get(name)!.action(player, ...args)).toBe("本店未启用计费");
+    }
+    expect(client.calls.map((call) => call[0]).filter((name) => name !== "getBotConfig")).toEqual([]);
+    // Binding needs no billing.
+    client.confirmPlatformBinding = async () => ({});
+    await expect(registered.get("bind <code:string>")!.action(player, "CODE")).resolves.toContain("绑定成功");
   });
 });
 
 
 it("sends every command as a request over one authenticated connection", async () => {
   const registered = new Map<string, RegisteredCommand>();
-  const sessions = [{ id: "entry-1", playerId: "player-1", label: "entry" }];
+  const seats: any[] = [];
   const ok = (value: unknown) => ({ status: 200, body: { data: value } });
   const platform = fakePlatform((frame) => {
-    if (frame.path.endsWith("/sessions/active")) return ok({ sessions: [...sessions] });
     if (frame.path.endsWith("/players/by-identity/register"))
       return ok({ player: { id: "player-1", displayName: "Test player", status: "active" } });
-    if (frame.path.endsWith("/players/by-identity/session/start")) {
-      if (frame.body.entry === true) return ok({ session: { id: "entry-1", playerId: "player-1" } });
-      sessions.push({ id: "table-1", playerId: "player-1", label: "麻将 A 桌" });
-      return ok({ session: { id: "table-1", playerId: "player-1" } });
-    }
-    if (frame.path.endsWith("/players/by-identity/sessions/table-1/stop")) {
-      sessions.splice(sessions.findIndex(row => row.id === "table-1"), 1);
-      return ok({ session: { id: "table-1", status: "closed" } });
+    if (frame.path.endsWith("/players/by-identity/session/start"))
+      return ok({ session: { id: "entry-1", playerId: "player-1" }, created: true });
+    if (frame.path === "integration/mahjong-tables")
+      return ok({ tables: [{ id: "table-a", name: "麻将 A 桌", aliases: ["a"], capacity: 1, seats: seats.map((seat) => ({ ...seat, mine: undefined })) }] });
+    if (frame.path === "integration/players/by-identity/mahjong") {
+      if (frame.body.action === "join") seats.push({ playerId: "player-1", name: "Test player", mine: true, playing: true });
+      else seats.length = 0;
+      return ok({ mahjong: { capacity: 1, seats: [...seats] } });
     }
     return { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } };
-  });
+  }, { mahjongTables: [{ id: "table-a", name: "麻将 A 桌", aliases: ["a"], capacity: 1 }] });
   applyPrismKoishiPlugin(createMockKoishiContext(registered), {
     baseUrl: "https://prism.invalid/", shopCode: "audit", integrationToken: "fake-integration-token",
-    autoRegister: true, loginSessionLabel: "音游区间", defaultDoorDeviceId: "door", defaultScanProvider: "aime",
-    currencyName: "积分", mahjongTableSize: 1,
-    mahjongTableConfigs: [{ displayName: "麻将 A 桌", aliases: ["a"], pricingConfigIds: ["pricing-a"] }],
     socket: platform.factory,
   });
   await platform.connected();
@@ -1910,10 +1580,16 @@ it("sends every command as a request over one authenticated connection", async (
   const sender = { session: { platform: "onebot", userId: "1234" } };
   expect(await registered.get("login [target:user]")!.action(sender)).toContain("入场成功");
   expect(await registered.get("上桌 [tableId]")!.action(sender, "a")).toContain("麻将计费已开始");
-  expect(await registered.get("下桌")!.action(sender)).toContain("麻将计费已停止");
-  const starts = platform.requests().filter(frame => frame.path.endsWith("/session/start"));
-  expect(starts.map(frame => frame.body.entry)).toEqual([true, false]);
-  expect(starts.map(frame => frame.body.label)).toEqual(["音游区间", "麻将 A 桌"]);
+  expect(await registered.get("下桌 [tableId]")!.action(sender)).toContain("麻将计费已停止");
+  // Admission names no plan and no label: the shop's default plan is the platform's to know.
+  const [start] = platform.requests().filter(frame => frame.path.endsWith("/session/start"));
+  expect(start.body).toEqual({ identity: { provider: "onebot", subject: "1234" }, displayName: "1234", entry: true });
+  expect(platform.requests().filter(frame => frame.path.endsWith("/mahjong")).map(frame => [frame.body.table, frame.body.action]))
+    .toEqual([["table-a", "join"], ["table-a", "leave"]]);
+  // A registered player is resolved the one way there is.
+  expect(platform.requests().some(frame => frame.path.endsWith("/resolve"))).toBe(false);
+  // The settings were read once, when the connection opened.
+  expect(platform.settingsReads()).toBe(1);
   for (const frame of platform.requests()) {
     expect(frame.path.startsWith("integration/")).toBe(true);
     expect(typeof frame.id).toBe("string");
@@ -1921,7 +1597,7 @@ it("sends every command as a request over one authenticated connection", async (
   }
   // Every request has its own id, so a resend is recognised as the same request.
   expect(new Set(platform.requests().map(frame => frame.id)).size).toBe(platform.requests().length);
-  expect(sessions).toEqual([{ id: "entry-1", playerId: "player-1", label: "entry" }]);
+  expect(seats).toEqual([]);
 });
 
 it("times the same wallet query over HTTP and over the connection", async () => {
@@ -1931,7 +1607,7 @@ it("times the same wallet query over HTTP and over the connection", async () => 
     : { status: 404, body: { error: { code: "NOT_FOUND", message: "no" } } });
   const posts: any[] = [];
   applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-    ...basics, ...connection, socket: platform.factory,
+    ...connection, socket: platform.factory,
     httpPost: async (url, headers, body) => {
       posts.push({ url, headers, body });
       return { status: 200, headers: new Headers({ "x-response-time": "9ms", "cf-ray": "8f00aa-NRT" }), data: { data: { wallet: [] } } };
@@ -1956,7 +1632,7 @@ it("times the same wallet query over HTTP and over the connection", async () => 
   // A refused query is reported, not timed.
   const refused = fakePlatform(() => ({ status: 403, body: { error: { code: "PLAYER_DISABLED", message: "玩家已停用" } } }));
   const other = new Map<string, RegisteredCommand>();
-  applyPrismKoishiPlugin(createMockKoishiContext(other), { ...basics, ...connection, socket: refused.factory });
+  applyPrismKoishiPlugin(createMockKoishiContext(other), { ...connection, socket: refused.factory });
   await refused.connected();
   expect(await other.get("ws测速 [count:number]")!.action(sender, "1")).not.toContain("钱包查询：");
 });
@@ -1964,7 +1640,7 @@ it("times the same wallet query over HTTP and over the connection", async () => 
 it("binds each actual adapter sender without configuration overrides or channel restrictions", async () => {
   const registered = new Map<string, RegisteredCommand>();
   const platform = fakePlatform(() => ({ status: 200, body: { data: { playerId: "p" } } }));
-  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...basics, ...connection, socket: platform.factory });
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...connection, socket: platform.factory });
   await platform.connected();
   const command = registered.get("bind <code:string>")!;
   expect(await command.action({session:{platform:undefined,userId:"123456"}},"ABCD2345")).toContain("无法获取");
@@ -1980,62 +1656,141 @@ it("binds each actual adapter sender without configuration overrides or channel 
 it("reports a rejected binding code with the platform's message", async () => {
   const registered = new Map<string, RegisteredCommand>();
   const platform = fakePlatform(() => ({ status: 409, body: { error: { code: "BINDING_CODE_EXPIRED", message: "验证码已过期" } } }));
-  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...basics, ...connection, socket: platform.factory });
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...connection, socket: platform.factory });
   await platform.connected();
   expect(await registered.get("bind <code:string>")!.action({ session: { platform: "onebot", userId: "1" } }, "X")).toContain("验证码已过期");
 });
 
-it("uses shop-scoped v1 roster and includes persistent Mahjong waiting seats", async () => {
+it("reads the roster over the connection", async () => {
   const registered = new Map<string, RegisteredCommand>();
-  let sessions: any[] = [];
-  const platform = fakePlatform(() => ({ status: 200, body: { data: {
-    sessions, mahjongTables: [{ id: "table", name: "麻将 A", capacity: 4, players: [{ id: "p", name: "等待玩家" }] }],
-  } } }));
-  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...connection, socket: platform.factory } as PrismKoishiPluginConfig);
+  const platform = fakePlatform((frame) => frame.path === "integration/roster"
+    ? { status: 200, body: { data: { total: 1, groups: [{ kind: "resource", id: "table-a", name: "🀄️ 大洋化学", capacity: 4, members: [{ playerId: "p", displayName: "等待玩家", identities: [] }] }] } } }
+    : null, { mahjongTables: [mahjongTable] });
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...connection, socket: platform.factory });
   await platform.connected();
-  const result = await registered.get("list")!.action({session:{userId:"123456"}});
-  expect(platform.requests().map(frame => [frame.method, frame.path])).toEqual([["GET", "integration/sessions/active"]]);
-  expect(result).toContain("麻将 A（1/4）");
-  expect(result).toContain("等待玩家");
-  expect(result).toContain("[总计 1 人]");
-  expect(result).not.toContain("目前没有玩家");
-  sessions = [
-    { id: "s1", playerId: "p", playerDisplayName: "等待玩家", label: "音游区间" },
-    { id: "s2", playerId: "other", playerDisplayName: "音游玩家", label: "音游区间" },
-  ];
-  const mixed = await registered.get("list")!.action({session:{userId:"123456"}});
-  expect(mixed).toContain("[总计 2 人]");
-  expect(mixed.match(/等待玩家/g)).toHaveLength(1);
+  const result = await registered.get("list [name:text]")!.action({session:{userId:"123456"}});
+  expect(platform.requests().map(frame => [frame.method, frame.path])).toEqual([["GET", "integration/roster"]]);
+  expect(result).toBe("[总计 1 人]\n\n🀄️ 大洋化学 ( 1/4 )：\n- 等待玩家");
 });
 
-it("announces idle power-offs where the staff asked, as early as they asked", async () => {
-  const registered = new Map<string, RegisteredCommand>();
-  const broadcasts: Array<[string[], string]> = [];
-  const platform = fakePlatform(() => null);
-  const now = new Date("2026-10-21T12:00:00Z");
-  applyPrismKoishiPlugin({
-    ...createMockKoishiContext(registered),
-    async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
-  }, {
-    ...basics, ...connection, socket: platform.factory, now: () => now,
-    idleNotifyChannelIds: ["onebot:123456789"], idleReminderMinutes: 5,
+describe("the bot's settings from the platform", () => {
+  it("reads them over the connection before saying hello, and names itself as the shop named it", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const platform = fakePlatform(() => null);
+    // Hold the answer to the settings read, to see that hello waits for it.
+    const factory = platform.factory;
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), {
+      ...connection,
+      socket: (url, headers) => {
+        const socket = factory(url, headers);
+        const send = socket.send.bind(socket);
+        socket.send = (data: string) => {
+          if (data.includes("\"integration/bot\"")) void held.then(() => send(data));
+          else send(data);
+        };
+        return socket;
+      },
+    });
+    await platform.connected();
+    expect(platform.frames).toEqual([]);
+    release();
+    await platform.connected();
+    expect(platform.frames.map((frame) => frame.type === "request" ? `${frame.method} ${frame.path}` : frame.type)).toEqual([
+      "GET integration/bot",
+      "hello",
+    ]);
+    // A test platform offers no Home Assistant to watch, so the bot does not offer to.
+    expect(platform.hellos()).toEqual([{ type: "hello", name: "前台 Bot" }]);
   });
-  await platform.connected();
-  expect(platform.frames[0]).toEqual({ type: "hello", reminderLeadSeconds: 300 });
-  platform.push("idle.reminder", { reason: "device_idle", at: now.getTime() + 5 * 60_000, devices: [{ id: "m1", name: "舞萌" }, { id: "m2", name: "中二" }] });
-  platform.push("idle.reminder", { reason: "shop_empty", at: now.getTime() + 4 * 60_000, devices: [{ id: "m1", name: "舞萌" }] });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(broadcasts).toEqual([
-    [["onebot:123456789"], "舞萌、中二 闲置中，5 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟"],
-    [["onebot:123456789"], "店里没人，4 分钟后全部关机"],
-  ]);
-});
 
-it("asks for no reminders when there is nowhere to send them", async () => {
-  const platform = fakePlatform(() => null);
-  applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: platform.factory, idleReminderMinutes: 5 });
-  await platform.connected();
-  expect(platform.frames[0]).toEqual({ type: "hello" });
+  it("asks for reminders only when the settings name somewhere to send them", async () => {
+    const platform = fakePlatform(() => null, { settings: { idleChannelIds: [], idleReminderMinutes: 5 } });
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory });
+    await platform.connected();
+    expect(platform.hellos()).toEqual([{ type: "hello", name: "前台 Bot" }]);
+
+    const never = fakePlatform(() => null, { settings: { idleChannelIds: ["onebot:1"], idleReminderMinutes: 0 } });
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: never.factory });
+    await never.connected();
+    expect(never.hellos()).toEqual([{ type: "hello", name: "前台 Bot" }]);
+  });
+
+  it("announces idle power-offs where the settings say, as early as they say", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const broadcasts: Array<[string[], string]> = [];
+    const platform = fakePlatform(() => null, { settings: { idleChannelIds: ["onebot:123456789"], idleReminderMinutes: 5 } });
+    const now = new Date("2026-10-21T12:00:00Z");
+    applyPrismKoishiPlugin({
+      ...createMockKoishiContext(registered),
+      async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
+    }, { ...connection, socket: platform.factory, now: () => now });
+    await platform.connected();
+    expect(platform.hellos()).toEqual([{ type: "hello", name: "前台 Bot", reminderLeadSeconds: 300 }]);
+    platform.push("idle.reminder", { reason: "device_idle", at: now.getTime() + 5 * 60_000, devices: [{ id: "m1", name: "舞萌" }, { id: "m2", name: "中二" }] });
+    platform.push("idle.reminder", { reason: "shop_empty", at: now.getTime() + 4 * 60_000, devices: [{ id: "m1", name: "舞萌" }] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(broadcasts).toEqual([
+      [["onebot:123456789"], "舞萌、中二 闲置中，5 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟"],
+      [["onebot:123456789"], "店里没人，4 分钟后全部关机"],
+    ]);
+  });
+
+  it("rereads them and says hello again when the shop changes them", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const platform = fakePlatform(() => ({ status: 200, body: { session: { id: "s" }, created: true } }));
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...connection, socket: platform.factory });
+    await platform.connected();
+    const player = { session: { userId: "1" } };
+    await expect(registered.get("login [target:user]")!.action(player)).resolves.toBe("✅ 入场成功");
+
+    platform.change({ bot: { id: "bot-1", name: "收银台" }, settings: { playerCommands: "readonly", readOnlyNotice: "去网页入场", idleChannelIds: ["onebot:9"] } });
+    await platform.connected();
+    expect(platform.settingsReads()).toBe(2);
+    expect(platform.hellos().at(-1)).toEqual({ type: "hello", name: "收银台", reminderLeadSeconds: 300 });
+    await expect(registered.get("login [target:user]")!.action(player)).resolves.toBe("去网页入场");
+    // The settings were read when told, not again for the command.
+    expect(platform.settingsReads()).toBe(2);
+  });
+
+  it("answers only that it is disabled while the shop has disabled it", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const platform = fakePlatform(() => ({ status: 200, body: { wallet: [] } }));
+    platform.refuse(403, "BOT_DISABLED", "这个 Bot 已停用");
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...connection, socket: platform.factory });
+    await platform.connected();
+    // It stays connected, offering nothing, so the shop can enable it again.
+    expect(platform.hellos()).toEqual([{ type: "hello" }]);
+    const player = { session: { userId: "1" } };
+    for (const name of ["wallet [target:user]", "login [target:user]", "list [name:text]"]) {
+      expect(await registered.get(name)!.action(player)).toBe("Bot 已被店铺停用");
+    }
+    expect(await registered.get("bind <code:string>")!.action(player, "CODE")).toBe("Bot 已被店铺停用");
+    expect(platform.requests()).toEqual([]);
+
+    platform.change({});
+    await platform.connected();
+    expect(platform.hellos().at(-1)).toEqual({ type: "hello", name: "前台 Bot" });
+    expect(await registered.get("wallet [target:user]")!.action(player)).toContain("钱包余额");
+  });
+
+  it("takes staff from the platform identities the shop bound", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient({ staff: [{ provider: "onebot", subject: "114514" }] });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    for (const platform of ["onebot", "telegram"]) {
+      await registered.get("billing [target:user]")!.action({ session: { platform, userId: "114514", senderName: platform } });
+      await registered.get("wallet [target:user]")!.action({ session: { platform, userId: "114514" } });
+      expect(client.calls.find((call: any) => call[0] === "previewCheckoutByIdentity" && call[1]?.provider === platform)?.[1])
+        .toMatchObject({ provider: platform, subject: "114514", displayName: platform });
+    }
+    // The same number on another platform is someone else.
+    const telegram = { session: { platform: "telegram", userId: "114514" } };
+    expect(await registered.get("login [target:user]")!.action(telegram, "telegram:someone")).toBe("权限不足");
+    const onebot = { session: { platform: "onebot", userId: "114514" } };
+    expect(await registered.get("login [target:user]")!.action(onebot, "telegram:someone")).toBe("请在目标平台使用该命令");
+    expect(await registered.get("login [target:user]")!.action(onebot, "onebot:someone")).toContain("入场成功");
+  });
 });
 
 /** A Home Assistant the test drives by hand: every connection the bot opens to it is kept. */
@@ -2064,30 +1819,49 @@ function fakeHomeAssistant() {
 const watch = { term: 5, connections: [{ id: "ha_1", urls: ["http://ha.local:8123"], token: "reader", entities: ["switch.a"] }] };
 
 describe("watching Home Assistant for the shop", () => {
-  it("says it can, by name, so the platform may ask", async () => {
-    const platform = fakePlatform(() => null);
+  it("says it can, by the name the shop gave it, so the platform may ask", async () => {
+    const platform = fakePlatform(() => null, { bot: { id: "bot-1", name: "前台" } });
     const home = fakeHomeAssistant();
-    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: platform.factory, haSocket: home.factory, botName: "前台", idleReminderMinutes: 0 });
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory, haSocket: home.factory });
     await platform.connected();
-    expect(platform.frames[0]).toEqual({ type: "hello", ha: true, name: "前台" });
+    expect(platform.hellos()).toEqual([{ type: "hello", name: "前台", ha: true }]);
   });
 
-  it("is called Koishi when nobody named it, and can be told not to watch", async () => {
-    const named = fakePlatform(() => null);
-    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: named.factory, haSocket: fakeHomeAssistant().factory, idleReminderMinutes: 0 });
-    await named.connected();
-    expect(named.frames[0]).toEqual({ type: "hello", ha: true, name: "Koishi" });
-
-    const off = fakePlatform(() => null);
-    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: off.factory, haSocket: fakeHomeAssistant().factory, watchHomeAssistant: false, idleReminderMinutes: 0 });
+  it("does not offer to watch when the settings say not to, and ignores a watch sent anyway", async () => {
+    const off = fakePlatform(() => null, { settings: { watchHomeAssistant: false } });
+    const home = fakeHomeAssistant();
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: off.factory, haSocket: home.factory });
     await off.connected();
-    expect(off.frames[0]).toEqual({ type: "hello" });
+    expect(off.hellos()).toEqual([{ type: "hello", name: "前台 Bot" }]);
+    off.pushFrame({ type: "ha.watch", watch });
+    expect(home.opened).toEqual([]);
+  });
+
+  it("stops watching when the shop turns it off, and offers again when turned back on", async () => {
+    const platform = fakePlatform(() => null);
+    const home = fakeHomeAssistant();
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory, haSocket: home.factory });
+    await platform.connected();
+    platform.pushFrame({ type: "ha.watch", watch });
+    expect(home.sockets).toHaveLength(1);
+
+    platform.change({ settings: { watchHomeAssistant: false } });
+    await platform.connected();
+    expect(home.sockets[0]!.closed).toBe(true);
+    // The platform hands the watch on when it hears this hello.
+    expect(platform.hellos().at(-1)).toEqual({ type: "hello", name: "前台 Bot" });
+
+    platform.change({ settings: { watchHomeAssistant: true } });
+    await platform.connected();
+    expect(platform.hellos().at(-1)).toEqual({ type: "hello", name: "前台 Bot", ha: true });
+    platform.pushFrame({ type: "ha.watch", watch });
+    expect(home.sockets).toHaveLength(2);
   });
 
   it("subscribes when the platform asks and reports what it sees to the platform", async () => {
     const platform = fakePlatform(() => null);
     const home = fakeHomeAssistant();
-    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: platform.factory, haSocket: home.factory, idleReminderMinutes: 0 });
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory, haSocket: home.factory });
     await platform.connected();
     platform.pushFrame({ type: "ha.watch", watch });
     // Home Assistant is reached by the address given, and signed into with the token given, not the bot's own.
@@ -2108,7 +1882,7 @@ describe("watching Home Assistant for the shop", () => {
   it("lets go of Home Assistant when the platform says so, or an unreadable watch arrives", async () => {
     const platform = fakePlatform(() => null);
     const home = fakeHomeAssistant();
-    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: platform.factory, haSocket: home.factory, idleReminderMinutes: 0 });
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory, haSocket: home.factory });
     await platform.connected();
     platform.pushFrame({ type: "ha.watch", watch });
     await platform.connected();
@@ -2125,7 +1899,7 @@ describe("watching Home Assistant for the shop", () => {
   it("lets go of Home Assistant when the platform connection drops, as the platform forgets the watch", async () => {
     const platform = fakePlatform(() => null);
     const home = fakeHomeAssistant();
-    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...basics, ...connection, socket: platform.factory, haSocket: home.factory, idleReminderMinutes: 0 });
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory, haSocket: home.factory });
     await platform.connected();
     platform.pushFrame({ type: "ha.watch", watch });
     await platform.connected();
@@ -2138,10 +1912,8 @@ it("lets an entered player keep a device on, even in read-only mode", async () =
   const registered = new Map<string, RegisteredCommand>();
   const platform = fakePlatform((frame) => frame.body?.action?.type === "power.keep"
     ? { status: 200, body: { data: { action: { status: "succeeded", payload: { deviceLabel: "舞萌" } } } } }
-    : null);
-  applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-    ...basics, ...connection, socket: platform.factory, playerCommands: "readonly", readOnlyNotice: "请扫码操作",
-  });
+    : null, { settings: { playerCommands: "readonly", readOnlyNotice: "请扫码操作" } });
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...connection, socket: platform.factory });
   await platform.connected();
   expect(await registered.get("keep <deviceRef>")!.action({ session: { platform: "onebot", userId: "1" } }, "舞萌")).toContain("舞萌 已延迟关机");
   const [frame] = platform.requests();
@@ -2155,84 +1927,73 @@ it("fails a command at once while the connection is down, instead of queueing it
   const sent: string[] = [];
   // A connection that never opens, as while the platform is unreachable.
   const socket = { readyState: 0, addEventListener() {}, send(data: string) { sent.push(data); }, close() {} };
-  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...basics, ...connection, socket: () => socket });
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { ...connection, socket: () => socket });
   expect(await registered.get("wallet [target:user]")!.action({ session: { userId: "1" } })).toBe("操作失败，暂时连不上服务器。");
   expect(sent).toEqual([]);
 });
 
-it("uses the message adapter for every billing identity and scopes staff privileges across platforms",async()=>{
-  const registered=new Map<string,RegisteredCommand>();
-  const client=createDefaultClient();
-  applyPrismKoishiPlugin(createMockKoishiContext(registered),{
-    autoRegister:true,defaultDoorDeviceId:"front-door",defaultScanProvider:"aime",currencyName:"猫粮",
-    enableStaffCommands:true,staffUserIds:["onebot:114514"],client,
+it("leaves read-only players lookups, binding and redeeming while staff keep every command", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  const client = createDefaultClient({
+    settings: { playerCommands: "readonly", readOnlyNotice: "请扫码操作" },
+    staff: [{ provider: "onebot", subject: "999" }],
   });
-  for(const platform of ["onebot","telegram"]){
-    await registered.get("billing [target:user]")!.action({session:{platform,userId:"114514",senderName:platform}});
-    await registered.get("wallet [target:user]")!.action({session:{platform,userId:"114514"}});
-    expect(client.calls.find((call:any)=>call[0]==="previewCheckoutByIdentity"&&call[1]?.provider===platform)?.[1])
-      .toMatchObject({provider:platform,subject:"114514",displayName:platform});
-  }
-  const telegram={session:{platform:"telegram",userId:"114514"}};
-  expect(await registered.get("login [target:user]")!.action(telegram,"telegram:someone")).toBe("权限不足");
-  const onebot={session:{platform:"onebot",userId:"114514"}};
-  expect(await registered.get("login [target:user]")!.action(onebot,"telegram:someone")).toBe("请在目标平台使用该命令");
-  expect(await registered.get("login [target:user]")!.action(onebot,"onebot:someone")).toContain("入场成功");
-});
-
-it("leaves read-only players lookups, binding and redeeming while staff keep every command",async()=>{
-  const registered=new Map<string,RegisteredCommand>();
-  const client=createDefaultClient();
-  applyPrismKoishiPlugin(createMockKoishiContext(registered),{
-    autoRegister:true,defaultDoorDeviceId:"front-door",defaultScanProvider:"aime",currencyName:"猫粮",
-    enableStaffCommands:true,staffUserIds:["onebot:999"],playerCommands:"readonly",readOnlyNotice:"请扫码操作",client,
-  });
-  const player={session:{platform:"onebot",userId:"114514"}};
-  const effects:[string,string[]][]=[
-    ["login [target:user]",[]],["入场 [target:user]",[]],["logout [target:user]",[]],
-    ["mahjong <tableId>",["a"]],["上桌 [tableId]",["a"]],["下桌",[]],
-    ["lock",[]],["on <deviceRef>",["maimai"]],["off <deviceRef>",["maimai"]],
-    ["coin <deviceRef> [count]",["maimai"]],["scan <deviceRef>",["maimai"]],
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+  const player = { session: { platform: "onebot", userId: "114514" } };
+  const effects: [string, string[]][] = [
+    ["login [target:user]", []], ["入场 [target:user]", []], ["logout [target:user]", []],
+    ["mahjong <tableId>", ["a"]], ["上桌 [tableId]", ["a"]], ["下桌 [tableId]", []],
+    ["lock", []], ["on <deviceRef>", ["maimai"]], ["off <deviceRef>", ["maimai"]],
+    ["coin <deviceRef> [count]", ["maimai"]], ["scan <deviceRef>", ["maimai"]],
   ];
-  for(const [name,args] of effects) expect(await registered.get(name)!.action(player,...args)).toBe("请扫码操作");
-  expect(client.calls.some((call:any)=>["startSessionByIdentity","confirmCheckoutByIdentity"].includes(call[0]))).toBe(false);
-  for(const name of ["wallet [target:user]","billing [target:user]","history [target:user]","items [target:user]","list","show [deviceId]","麻将列表","versions"]) {
+  for (const [name, args] of effects) expect(await registered.get(name)!.action(player, ...args)).toBe("请扫码操作");
+  expect(client.calls.some((call: any) => ["startSessionByIdentity", "confirmCheckoutByIdentity", "mahjongByIdentity"].includes(call[0]))).toBe(false);
+  for (const name of ["wallet [target:user]", "billing [target:user]", "history [target:user]", "items [target:user]", "list [name:text]", "show [deviceId]", "麻将列表", "versions"]) {
     expect(await registered.get(name)!.action(player)).not.toBe("请扫码操作");
   }
-  expect(await registered.get("redeem <code>")!.action(player,"CODE")).not.toBe("请扫码操作");
+  expect(await registered.get("redeem <code>")!.action(player, "CODE")).not.toBe("请扫码操作");
   expect(registered.has("register")).toBe(false);
-  const staff={session:{platform:"onebot",userId:"999"}};
+  // The same number on another platform is not staff.
+  expect(await registered.get("login [target:user]")!.action({ session: { platform: "telegram", userId: "999" } })).toBe("请扫码操作");
+  const staff = { session: { platform: "onebot", userId: "999" } };
   expect(await registered.get("login [target:user]")!.action(staff)).toContain("入场成功");
-  expect(await registered.get("login [target:user]")!.action(staff,"onebot:114514")).toContain("入场成功");
+  expect(await registered.get("login [target:user]")!.action(staff, "onebot:114514")).toContain("入场成功");
 });
 
-it("sends settlement notices only through the sender adapter",async()=>{
-  const registered=new Map<string,RegisteredCommand>();
-  const client=createDefaultClient();
-  const calls:any[]=[];
-  applyPrismKoishiPlugin(createMockKoishiContext(registered),{
-    autoRegister:true,defaultDoorDeviceId:"front-door",defaultScanProvider:"aime",currencyName:"猫粮",
-    logoutNotifyUserIds:["onebot:114514","telegram:114514"],client,
+it("sends receipts only to staff reachable through the sender adapter, and only when the settings say so", async () => {
+  const registered = new Map<string, RegisteredCommand>();
+  const client = createDefaultClient({
+    settings: { receiptsToStaff: true },
+    staff: [{ provider: "onebot", subject: "114514" }, { provider: "telegram", subject: "114514" }],
   });
-  for(const platform of ["onebot","telegram"]) await registered.get("logout [target:user]")!.action({session:{
-    platform,userId:"player",bot:{broadcast:async(ids:string[])=>{calls.push([platform,ids]);}},
-  }});
-  expect(calls).toEqual([["onebot",["private:114514"]],["telegram",["private:114514"]]]);
+  const calls: any[] = [];
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+  const logout = (platform: string) => registered.get("logout [target:user]")!.action({ session: {
+    platform, userId: "player", bot: { broadcast: async (ids: string[]) => { calls.push([platform, ids]); } },
+  } });
+  for (const platform of ["onebot", "telegram", "discord"]) await logout(platform);
+  expect(calls).toEqual([["onebot", ["private:114514"]], ["telegram", ["private:114514"]]]);
+
+  client.bot = botConfig({ settings: { receiptsToStaff: false }, staff: [{ provider: "onebot", subject: "114514" }] });
+  const quiet = new Map<string, RegisteredCommand>();
+  applyPrismKoishiPlugin(createMockKoishiContext(quiet), { client: client as any });
+  calls.length = 0;
+  await quiet.get("logout [target:user]")!.action({ session: { platform: "onebot", userId: "player", bot: { broadcast: async (ids: string[]) => { calls.push(ids); } } } });
+  expect(calls).toEqual([]);
 });
 
 it("renders API-carried shop offsets even when the Bot host uses another zone", async () => {
   const registered = new Map<string, RegisteredCommand>();
-  const client = createDefaultClient();
+  const client = createDefaultClient({ currencyName: "元" });
   const preview = await client.previewCheckoutByIdentity({});
   preview.sessionPreviews[0]!.startedAt = "2026-10-03T10:08:00+08:00";
   preview.sessionPreviews[0]!.endedAt = "2026-10-03T11:54:00+08:00";
   preview.settlementPreview.previewedAt = "2026-10-03T11:54:00+08:00";
   client.previewCheckoutByIdentity = async () => preview;
-  applyPrismKoishiPlugin(createMockKoishiContext(registered), {
-    autoRegister: true, defaultDoorDeviceId: "door", defaultScanProvider: "aime", currencyName: "元", client,
-  });
+  applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
   const result = await registered.get("billing [target:user]")!.action({ session: { userId: "123" } });
   expect(result).toContain("游玩时间：10:08–11:54（UTC+08:00）");
   expect(result).toContain("游玩时段：10:08-11:54");
   expect(result).toContain("游玩时长：1小时46分钟");
+  expect(result).toContain("计费总价：25元");
 });
