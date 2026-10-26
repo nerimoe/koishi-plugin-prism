@@ -47,7 +47,7 @@ Bot 连上平台后先读取这些设置，再向平台打招呼；网页里改�
 
 ### 统一平台
 
-配置 `baseUrl` 和本店的 Integration 令牌后（店铺编号可选），插件先按凭据读出所属店铺，再与 PRiSM 只保持**一条 WebSocket 连接**（`/api/v1/shops/:shopCode/integration/ws`），所有命令都作为请求帧走这条连接，平台也通过它推送闲置关机提醒。连接断开时命令直接回复「操作失败，暂时连不上服务器。」，不排队、不自动重发；插件在后台自动重连。需要 Koishi 的 `http` 服务（`ctx.http.ws`）。不再支持不填 `shopCode` 的单店兼容部署。
+配置 `baseUrl` 和本店的 Integration 令牌后（店铺编号可选），插件直接连 `/integration/ws`：凭据在握手时解析出店铺，和机台连 `/io/ws` 一样，地址里没有店铺编号。插件与 PRiSM 只保持**一条 WebSocket 连接**，所有命令都作为请求帧走这条连接，平台也通过它推送闲置关机提醒。连接断开时命令直接回复「操作失败，暂时连不上服务器。」，不排队、不自动重发；插件在后台自动重连。需要 Koishi 的 `http` 服务（`ctx.http.ws`）。不再支持不填 `shopCode` 的单店兼容部署。
 
 玩家在网页取得验证码后，向任意已接入的店铺 Bot 发送 `bind 验证码`（旧命令 `prism.bind` 仍可用）。店家可以在 PRiSM「设置 → 玩家与身份 → 绑定提示」改写玩家看到的绑定提示。所有命令从消息的 `session.platform` 和 `session.userId` 读取身份，发送 `{ code, provider, subject }`，不接受手填或代填身份；`provider` 配置已移除。例如同一实例的 OneBot 和 Telegram 消息分别使用 `onebot:114514` 和 `telegram:114514`。群／私聊过滤交给 Koishi。网页账号可以跨店使用，平台验证、玩家和余额按店铺隔离；同一网页账号追加平台绑定时复用同一个玩家。
 

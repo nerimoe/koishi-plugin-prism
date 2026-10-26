@@ -637,24 +637,12 @@ function serverLine(timings: Timing[]): string[] {
 }
 
 /**
- * The shop a credential belongs to, read before any shop is known. The plugin
- * is configured with an address and a token; the shop code comes from here.
+ * The platform connection URL. The credential names the shop, as a device's
+ * token names its machine at `/io/ws`, so nothing identifying is in the path.
  */
-export async function readShopOfToken(baseUrl: string, token: string, http?: HttpPost): Promise<{ code: string; name: string }> {
-  const base = baseUrl.trim().replace(/\/+$/, "");
-  if (!http) throw new Error("PRiSM Koishi plugin needs an HTTP client to read its shop.");
-  const { status, data } = await http(`${base}/api/v1/integration/bot`, { authorization: `Bearer ${token}`, accept: "application/json" }, undefined);
-  const body = data && typeof data === "object" && "data" in data ? data.data : data;
-  if (status >= 400) throw new PrismBotClientError(body?.error?.message ?? "无法读取店铺", body?.error?.code ?? "FORBIDDEN", status, body);
-  const shop = body?.shop;
-  if (!shop?.code) throw new PrismBotClientError("店铺信息缺失", "INVALID_RESPONSE", status, body);
-  return { code: String(shop.code), name: String(shop.name ?? "") };
-}
-
-/** The platform connection URL for a shop. */
-export function platformSocketUrl(baseUrl: string, shopCode: string): string {
+export function platformSocketUrl(baseUrl: string): string {
   const base = baseUrl.trim().replace(/\/+$/, "").replace(/^http/i, "ws");
-  return `${base}/api/v1/shops/${encodeURIComponent(shopCode)}/integration/ws`;
+  return `${base}/integration/ws`;
 }
 
 /* ----------------------------- api client ---------------------------------- */
@@ -904,12 +892,9 @@ class PrismKoishiService {
     // says nothing about Home Assistant: then there is no watching to offer.
     const haOpen: SocketFactory | null = options.haSocket ?? (options.socket ? null : open);
     if (haOpen) this.watcher = new HaWatcher(haOpen, (frame) => this.socket?.send(frame), this.logger);
-    // A configured shop code is honoured; otherwise ask the platform which shop
-    // this credential belongs to before connecting.
-    let shopCode = options.shopCode;
     this.socket = new PrismSocket(
       open,
-      () => platformSocketUrl(options.baseUrl!, shopCode!),
+      platformSocketUrl(options.baseUrl),
       options.integrationToken,
       () => this.hello(),
       (event) => {
@@ -932,14 +917,8 @@ class PrismKoishiService {
       });
       return { status: response.status, headers: response.headers, data: response.data };
     });
-    this.client = new PrismApiClient(this.socket, { post, baseUrl: options.baseUrl!, token: options.integrationToken, ...(shopCode ? { shopCode } : {}) });
+    this.client = new PrismApiClient(this.socket, { post, baseUrl: options.baseUrl!, token: options.integrationToken, ...(options.shopCode ? { shopCode: options.shopCode } : {}) });
     this.socket.start();
-    // Secrets are read once, then the socket connects with the shop code they name.
-    if (!shopCode) {
-      void readShopOfToken(options.baseUrl, options.integrationToken, post)
-        .then((shop) => { shopCode = shop.code; this.client.setShopCode(shop.code); this.socket?.reconnect(); })
-        .catch((error: unknown) => this.logger?.warn?.(`PRiSM: 无法读取店铺：${error instanceof Error ? error.message : String(error)}`));
-    }
   }
 
   dispose(): void {
@@ -959,7 +938,10 @@ class PrismKoishiService {
     this.reading = (async () => {
       try {
         const bot = parseBotConfig(await this.client.getBotConfig());
-        if (read === this.reads) this.bot = bot;
+        if (read === this.reads) {
+          this.bot = bot;
+          if (bot.shop?.code) this.client.setShopCode(bot.shop.code);
+        }
         return bot;
       } catch (error) {
         if (read === this.reads && error instanceof PrismBotClientError && error.code === "BOT_DISABLED") this.bot = null;

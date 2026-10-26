@@ -1576,7 +1576,7 @@ it("sends every command as a request over one authenticated connection", async (
   });
   await platform.connected();
   expect(platform.opened).toEqual([{
-    url: "wss://prism.invalid/api/v1/shops/audit/integration/ws",
+    url: "wss://prism.invalid/integration/ws",
     headers: { Authorization: "Bearer fake-integration-token" },
   }]);
   const sender = { session: { platform: "onebot", userId: "1234" } };
