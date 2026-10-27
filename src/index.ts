@@ -48,15 +48,16 @@ export type BotConfig = {
     powerOffStaffOnly: boolean;
     /** Staff on the same platform get checkout receipts privately. */
     receiptsToStaff: boolean;
-    /** Channels (`platform:channelId`) told before an idle power-off. */
-    idleChannelIds: string[];
+    /** Channels (`platform:channelId`) the shop says everything in: idle warnings and what happens. */
+    announceChannelIds: string[];
     /** How many minutes before an idle power-off to tell them; 0 for never. */
     idleReminderMinutes: number;
-    /** Channels (`platform:channelId`) told what happens at the shop, and which of it. */
-    eventChannelIds: string[];
+    /** Which news is told, each on its own. */
+    announceIdle: boolean;
     announcePower: boolean;
-    announceCards: boolean;
     announceStarts: boolean;
+    announceCards: boolean;
+    announceCoins: boolean;
   };
   /** Which shop this credential belongs to; the shop code is no longer configured by hand. */
   shop?: { code: string; name: string };
@@ -878,6 +879,7 @@ type EventPlayer = { playerId: string; displayName: string | null; identities: A
 type ShopEvent = { resourceId: string; resourceName: string; botId?: string } & (
   | { kind: "power"; state: "on" | "off"; by: "player" | "staff" | "system"; player: EventPlayer | null }
   | { kind: "card"; player: EventPlayer | null; started: boolean }
+  | { kind: "coin"; player: EventPlayer | null; started: boolean }
   | { kind: "occupancy"; player: EventPlayer }
 );
 
@@ -1004,8 +1006,11 @@ class PrismKoishiService {
       name: bot.bot.name,
       // Saying so is what makes the platform consider this bot for the watch.
       ...(this.watching ? { ha: true } : {}),
-      // Without anywhere to send it, the platform need not plan a reminder.
-      ...(settings.idleChannelIds.length && settings.idleReminderMinutes > 0 ? { reminderLeadSeconds: settings.idleReminderMinutes * 60 } : {}),
+      // Without anywhere to send it, or with idle news switched off, the
+      // platform need not plan a reminder.
+      ...(settings.announceIdle && settings.announceChannelIds.length && settings.idleReminderMinutes > 0
+        ? { reminderLeadSeconds: settings.idleReminderMinutes * 60 }
+        : {}),
     };
   }
 
@@ -1027,12 +1032,13 @@ class PrismKoishiService {
   /**
    * Tell the configured channels what happened, if this bot announces that kind
    * of thing. A card that put its owner on the cabinet is one message: a start
-   * when starts are announced, otherwise a card. What this bot's own command
-   * did is left out: the bot has answered the command already.
+   * when starts are announced, otherwise a card; a coin that did is the same.
+   * What this bot's own command did is left out: the bot has answered the
+   * command already.
    */
   async announce(event: ShopEvent): Promise<void> {
     const bot = this.bot;
-    const channels = bot?.settings.eventChannelIds ?? [];
+    const channels = bot?.settings.announceChannelIds ?? [];
     if (!bot || !channels.length || typeof this.ctx.broadcast !== "function") return;
     if (event.botId && event.botId === bot.bot.id) return;
     const message = await this.announcement(event, bot.settings);
@@ -1066,14 +1072,19 @@ class PrismKoishiService {
       if (event.started && settings.announceStarts) return `🎮 ${await who()} 在 ${place} 刷卡上机`;
       return settings.announceCards ? `💳 ${await who()} 在 ${place} 刷卡` : null;
     }
+    if (event.kind === "coin") {
+      if (event.started && settings.announceStarts) return `🎮 ${await who()} 在 ${place} 投币上机`;
+      return settings.announceCoins ? `🪙 ${await who()} 在 ${place} 投币` : null;
+    }
     if (event.kind === "occupancy") return settings.announceStarts ? `🎮 ${await who()} 在 ${place} 上机` : null;
     return null;
   }
 
-  /** Tell the configured channels a power-off is coming. Short: they can read a device name. */
+  /** Tell the configured channels a power-off is coming, when the shop asks for it. */
   async remindIdle(reminder: IdleReminder): Promise<void> {
-    const channels = this.bot?.settings.idleChannelIds ?? [];
-    if (!channels.length || typeof this.ctx.broadcast !== "function") return;
+    const settings = this.bot?.settings;
+    const channels = settings?.announceChannelIds ?? [];
+    if (!settings?.announceIdle || !channels.length || typeof this.ctx.broadcast !== "function") return;
     const now = (this.options.now?.() ?? new Date()).getTime();
     const minutes = Math.max(1, Math.round((reminder.at - now) / 60_000));
     const names = reminder.devices.map((device) => device.name).join("、");
@@ -1939,12 +1950,13 @@ function parseBotConfig(value: unknown): BotConfig {
       staffCommands: settings.staffCommands !== false,
       powerOffStaffOnly: settings.powerOffStaffOnly === true,
       receiptsToStaff: settings.receiptsToStaff === true,
-      idleChannelIds: strings(settings.idleChannelIds),
+      announceChannelIds: strings(settings.announceChannelIds),
       idleReminderMinutes: Math.max(0, Number(settings.idleReminderMinutes ?? 5) || 0),
-      eventChannelIds: strings(settings.eventChannelIds),
+      announceIdle: settings.announceIdle === true,
       announcePower: settings.announcePower === true,
-      announceCards: settings.announceCards === true,
       announceStarts: settings.announceStarts === true,
+      announceCards: settings.announceCards === true,
+      announceCoins: settings.announceCoins === true,
     },
     billingEnabled: record.billingEnabled !== false,
     currencyName: cleanText(record.currencyName) || "余额",

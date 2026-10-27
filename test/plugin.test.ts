@@ -24,7 +24,7 @@ function botConfig(overrides: BotConfigInput = {}): BotConfig {
       staffCommands: true,
       powerOffStaffOnly: false,
       receiptsToStaff: false,
-      idleChannelIds: [],
+      announceChannelIds: [],
       idleReminderMinutes: 5,
       ...overrides.settings,
     },
@@ -1745,12 +1745,12 @@ describe("the bot's settings from the platform", () => {
   });
 
   it("asks for reminders only when the settings name somewhere to send them", async () => {
-    const platform = fakePlatform(() => null, { settings: { idleChannelIds: [], idleReminderMinutes: 5 } });
+    const platform = fakePlatform(() => null, { settings: { announceChannelIds: [], idleReminderMinutes: 5, announceIdle: true } });
     applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory });
     await platform.connected();
     expect(platform.hellos()).toEqual([{ type: "hello", name: "前台 Bot" }]);
 
-    const never = fakePlatform(() => null, { settings: { idleChannelIds: ["onebot:1"], idleReminderMinutes: 0 } });
+    const never = fakePlatform(() => null, { settings: { announceChannelIds: ["onebot:1"], idleReminderMinutes: 0, announceIdle: true } });
     applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: never.factory });
     await never.connected();
     expect(never.hellos()).toEqual([{ type: "hello", name: "前台 Bot" }]);
@@ -1759,7 +1759,7 @@ describe("the bot's settings from the platform", () => {
   it("announces idle power-offs where the settings say, as early as they say", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const broadcasts: Array<[string[], string]> = [];
-    const platform = fakePlatform(() => null, { settings: { idleChannelIds: ["onebot:123456789"], idleReminderMinutes: 5 } });
+    const platform = fakePlatform(() => null, { settings: { announceChannelIds: ["onebot:123456789"], idleReminderMinutes: 5, announceIdle: true } });
     const now = new Date("2026-10-21T12:00:00Z");
     applyPrismKoishiPlugin({
       ...createMockKoishiContext(registered),
@@ -1779,7 +1779,7 @@ describe("the bot's settings from the platform", () => {
   it("announces what happens at the shop as its settings say, once per swipe, and not what it did itself", async () => {
     const broadcasts: Array<[string[], string]> = [];
     const platform = fakePlatform(() => null, {
-      settings: { eventChannelIds: ["onebot:42"], announcePower: true, announceCards: true, announceStarts: true },
+      settings: { announceChannelIds: ["onebot:42"], announcePower: true, announceCards: true, announceStarts: true },
     });
     applyPrismKoishiPlugin({
       ...createMockKoishiContext(new Map()),
@@ -1808,7 +1808,7 @@ describe("the bot's settings from the platform", () => {
 
   it("announces only the kinds it is told to, and a start as a swipe when starts are off", async () => {
     const broadcasts: Array<[string[], string]> = [];
-    const platform = fakePlatform(() => null, { settings: { eventChannelIds: ["onebot:42"], announceCards: true } });
+    const platform = fakePlatform(() => null, { settings: { announceChannelIds: ["onebot:42"], announceCards: true } });
     applyPrismKoishiPlugin({
       ...createMockKoishiContext(new Map()),
       async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
@@ -1817,9 +1817,59 @@ describe("the bot's settings from the platform", () => {
     const bob = { playerId: "p2", displayName: "Bob", identities: [] };
     platform.push("shop.event", { resourceId: "m1", resourceName: "中二", kind: "power", state: "on", by: "staff", player: null });
     platform.push("shop.event", { resourceId: "m1", resourceName: "中二", kind: "card", player: bob, started: true });
+    platform.push("shop.event", { resourceId: "m1", resourceName: "中二", kind: "coin", player: bob, started: true });
     platform.push("shop.event", { resourceId: "m1", resourceName: "中二", kind: "occupancy", player: bob });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(broadcasts).toEqual([[["onebot:42"], "💳 Bob 在 中二 刷卡"]]);
+  });
+
+  it("tells a coin on its own switch, and as a start when starts are told", async () => {
+    const broadcasts: Array<[string[], string]> = [];
+    const platform = fakePlatform(() => null, { settings: { announceChannelIds: ["onebot:42"], announceCoins: true } });
+    applyPrismKoishiPlugin({
+      ...createMockKoishiContext(new Map()),
+      async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
+    }, { ...connection, socket: platform.factory, resolveDisplayName: (subject: string) => `Player ${subject}` });
+    await platform.connected();
+    const carol = { playerId: "p3", displayName: "Carol", identities: [{ provider: "onebot", subject: "8" }] };
+    const place = { resourceId: "m1", resourceName: "舞萌" };
+    platform.push("shop.event", { ...place, kind: "coin", player: carol, started: false });
+    platform.push("shop.event", { ...place, kind: "coin", player: null, started: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(broadcasts).toEqual([
+      [["onebot:42"], "🪙 Player 8 在 舞萌 投币"],
+      [["onebot:42"], "🪙 未绑定的卡 在 舞萌 投币"],
+    ]);
+
+    // A coin that also starts someone is one message, said as a start.
+    const starts: Array<[string[], string]> = [];
+    const starting = fakePlatform(() => null, { settings: { announceChannelIds: ["onebot:42"], announceCoins: true, announceStarts: true } });
+    applyPrismKoishiPlugin({
+      ...createMockKoishiContext(new Map()),
+      async broadcast(channels: string[], content: string) { starts.push([channels, content]); },
+    }, { ...connection, socket: starting.factory, resolveDisplayName: (subject: string) => `Player ${subject}` });
+    await starting.connected();
+    starting.push("shop.event", { ...place, kind: "coin", player: carol, started: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(starts).toEqual([[["onebot:42"], "🎮 Player 8 在 舞萌 投币上机"]]);
+  });
+
+  it("does not ask for idle reminders when idle news is switched off", async () => {
+    const platform = fakePlatform(() => null, { settings: { announceChannelIds: ["onebot:1"], idleReminderMinutes: 5, announceIdle: false } });
+    applyPrismKoishiPlugin(createMockKoishiContext(new Map()), { ...connection, socket: platform.factory });
+    await platform.connected();
+    expect(platform.hellos()).toEqual([{ type: "hello", name: "前台 Bot" }]);
+    // Nor does it say anything when one arrives anyway.
+    const broadcasts: Array<[string[], string]> = [];
+    const quiet = fakePlatform(() => null, { settings: { announceChannelIds: ["onebot:1"], idleReminderMinutes: 5, announceIdle: false } });
+    applyPrismKoishiPlugin({
+      ...createMockKoishiContext(new Map()),
+      async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
+    }, { ...connection, socket: quiet.factory });
+    await quiet.connected();
+    quiet.push("idle.reminder", { reason: "device_idle", at: Date.now() + 60_000, devices: [{ id: "m1", name: "舞萌" }] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(broadcasts).toEqual([]);
   });
 
   it("rereads them and says hello again when the shop changes them", async () => {
@@ -1830,7 +1880,7 @@ describe("the bot's settings from the platform", () => {
     const player = { session: { userId: "1" } };
     await expect(registered.get("login [target:user]")!.action(player)).resolves.toBe("✅ 入场成功");
 
-    platform.change({ bot: { id: "bot-1", name: "收银台" }, settings: { playerCommands: "readonly", readOnlyNotice: "去网页入场", idleChannelIds: ["onebot:9"] } });
+    platform.change({ bot: { id: "bot-1", name: "收银台" }, settings: { playerCommands: "readonly", readOnlyNotice: "去网页入场", announceChannelIds: ["onebot:9"], announceIdle: true } });
     await platform.connected();
     expect(platform.settingsReads()).toBe(2);
     expect(platform.hellos().at(-1)).toEqual({ type: "hello", name: "收银台", reminderLeadSeconds: 300 });
