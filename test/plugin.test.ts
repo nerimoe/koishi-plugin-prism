@@ -1558,21 +1558,32 @@ describe("applyPrismKoishiPlugin", () => {
     expect(result).not.toContain("优惠后价格：");
   });
 
-  it("answers billing commands with a notice in a shop that does not bill", async () => {
+  it("refuses entry locally when the bot's resource group is free, and leaves everything else to the platform", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient({ billingEnabled: false, mahjongTables: [mahjongTable] });
     applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
     const player = { session: { userId: "1" } };
-    for (const [name, args] of [
-      ["login [target:user]", []], ["logout [target:user]", []], ["billing [target:user]", []], ["wallet [target:user]", []],
-      ["上桌 [tableId]", ["a"]], ["下桌 [tableId]", []], ["麻将列表", []], ["list [name:text]", []],
-    ] as Array<[string, string[]]>) {
-      expect(await registered.get(name)!.action(player, ...args)).toBe("本店未启用计费");
+    for (const name of ["login [target:user]", "入场 [target:user]"]) {
+      expect(await registered.get(name)!.action(player)).toBe("这里不计费，无需入场");
     }
     expect(client.calls.map((call) => call[0]).filter((name) => name !== "getBotConfig")).toEqual([]);
-    // Binding needs no billing.
-    client.confirmPlatformBinding = async () => ({});
-    await expect(registered.get("bind <code:string>")!.action(player, "CODE")).resolves.toContain("绑定成功");
+    // A bill or a wallet spans the shop, and a table has its own plan: these still reach the platform.
+    await registered.get("wallet [target:user]")!.action(player);
+    await registered.get("logout [target:user]")!.action(player);
+    await registered.get("上桌 [tableId]")!.action(player, "a");
+    expect(client.calls.map((call) => call[0]).filter((name) => name !== "getBotConfig").length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("explains a free bot resource the platform refuses, and keeps an older platform's notice", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    // The bot read its settings before the shop made its group free.
+    client.startSessionByIdentity = async () => {
+      throw new PrismBotClientError("这里不计费，无需确认", "RESOURCE_NOT_BILLED", 409, null);
+    };
+    expect(await registered.get("login [target:user]")!.action({ session: { userId: "1" } })).toBe("这里不计费，无需入场");
+    expect(humanReadableBotError(new PrismBotClientError("x", "BILLING_DISABLED", 409, null))).toBe("本店未启用计费");
   });
 });
 

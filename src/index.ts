@@ -55,6 +55,7 @@ export type BotConfig = {
   };
   /** Which shop this credential belongs to; the shop code is no longer configured by hand. */
   shop?: { code: string; name: string };
+  /** Whether entering through this bot bills: its own plan, otherwise its resource group's. */
   billingEnabled: boolean;
   currencyName: string;
   /** Staff are these platform identities. */
@@ -226,10 +227,12 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
   type Handler = (context: KoishiActionContext, ...args: string[]) => Promise<string> | string;
   /**
    * `effect`: starts billing, settles a bill or drives a device, so read-only mode
-   * leaves it to staff. `billed`: means nothing in a shop that does not bill.
+   * leaves it to staff. `entry`: starts this bot's plan, which there is none of
+   * when the bot's resource group is free; everything else a player owes or
+   * holds spans the shop, so the platform answers it.
    * `offline`: answers without the bot's settings, as `versions` must.
    */
-  type Gate = { effect?: boolean; billed?: boolean; offline?: boolean };
+  type Gate = { effect?: boolean; entry?: boolean; offline?: boolean };
 
   const wrap = (handler: Handler, gate: Gate = {}) => async (context: KoishiActionContext, ...args: string[]): Promise<string> => {
     const quoted = (message: string) =>
@@ -241,7 +244,7 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
         if (gate.effect && bot.settings.playerCommands === "readonly" && !service.isStaff(bot, await service.sender(context))) {
           return quoted(bot.settings.readOnlyNotice || DEFAULT_READ_ONLY_NOTICE);
         }
-        if (gate.billed && !bot.billingEnabled) return quoted(BILLING_DISABLED_NOTICE);
+        if (gate.entry && !bot.billingEnabled) return quoted(RESOURCE_NOT_BILLED_NOTICE);
       }
       return quoted(await handler(context, ...args));
     } catch (error) {
@@ -250,7 +253,7 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
   };
 
   const effect = (handler: Handler, gate: Gate = {}) => wrap(handler, { ...gate, effect: true });
-  const billed = { billed: true };
+  const entry = { entry: true };
 
   const bind = wrap(async (context, code) => service.bind(await service.sender(context), code));
   ctx.command("bind <code:string>", "绑定网页登录账号到当前平台身份").action(bind);
@@ -259,39 +262,39 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
 
   ctx.command("login [target:user]", "开启玩家计费场次").action(effect(async (context, target) =>
     service.loginForTarget(await service.sender(context), target, context.session?.bot),
-  billed));
+  entry));
 
   ctx.command("入场 [target:user]", "入场").action(effect(async (context, target) =>
     service.loginForTarget(await service.sender(context), target, context.session?.bot),
-  billed));
+  entry));
 
   ctx.command("mahjong <tableId>", "加入指定麻将桌").action(effect(async (context, tableId) =>
     service.mahjongJoin(await service.sender(context), tableId),
-  billed));
+  ));
 
   ctx.command("上桌 [tableId]", "加入指定麻将桌").action(effect(async (context, tableId) =>
     service.mahjongJoin(await service.sender(context), tableId),
-  billed));
+  ));
 
   ctx.command("下桌 [tableId]", "离开当前所在麻将桌").action(effect(async (context, tableId) =>
     service.mahjongLeave(await service.sender(context), tableId),
-  billed));
+  ));
 
   ctx.command("麻将列表", "查看麻将机状态与别名").action(wrap(async () =>
     service.listMahjongTables(),
-  billed));
+  ));
 
   ctx.command("logout [target:user]", "结算玩家计费场次").action(effect(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.logout(sender, context.session?.bot), context.session?.bot),
-  billed));
+  ));
 
   ctx.command("billing [target:user]", "预览玩家结账费用").action(wrap(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.billing(sender), context.session?.bot),
-  billed));
+  ));
 
   ctx.command("wallet [target:user]", "查看玩家钱包").action(wrap(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.wallet(sender), context.session?.bot),
-  billed));
+  ));
 
   ctx.command("api测速 [count:number]", "测试 Bot 走 HTTP 到 PRiSM 的延迟").action(wrap(async (context, count) =>
     service.benchmarkApi(await service.sender(context), count),
@@ -308,11 +311,11 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
 
   ctx.command("items [target:user]", "查看玩家资产").action(wrap(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.items(sender), context.session?.bot),
-  billed));
+  ));
 
   ctx.command("list [name:text]", "查看在店玩家，或某个资源、某个计费方案上的玩家").action(wrap(async (context, name) =>
     service.listActiveSessions(await service.sender(context), name),
-  billed));
+  ));
 
   ctx.command("show [deviceId]", "查看设备电源状态").action(wrap(async (context, deviceId) =>
     service.listDeviceStates(deviceId),
@@ -320,7 +323,7 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
 
   ctx.command("history [target:user]", "查看玩家历史").action(wrap(async (context, target) =>
     service.withTarget(await service.sender(context), target, (sender) => service.history(sender), context.session?.bot),
-  billed));
+  ));
 
   ctx.command("lock", "向本店门锁发送开门指令").action(effect(async (context) =>
     service.lock(await service.sender(context)),
@@ -350,27 +353,30 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
 
   ctx.command("redeem <code>", "兑换 PRiSM 礼物码").action(wrap(async (context, code) =>
     service.redeem(await service.sender(context), code),
-  billed));
+  ));
 
   ctx.command("add <target:user> <amount:number>", "增加玩家余额").action(wrap(async (context, target, amount) =>
     service.adjustTargetBalance(await service.sender(context), target, amount, 1, context.session?.bot),
-  billed));
+  ));
 
   ctx.command("del <target:user> <amount:number>", "扣除玩家余额").action(wrap(async (context, target, amount) =>
     service.adjustTargetBalance(await service.sender(context), target, amount, -1, context.session?.bot),
-  billed));
+  ));
 
   ctx.command("overwrite <target:user> <amount:number> [reason:text]", "覆盖结账金额并立即结账").action(
     wrap(async (context, target, amount, reason) =>
       service.overwriteTargetCheckout(await service.sender(context), target, amount, reason, context.session?.bot),
-    billed),
+    ),
   );
 
   ctx.on?.("dispose", () => service.dispose());
 }
 
 const DEFAULT_READ_ONLY_NOTICE = "请扫描店内二维码或碰 NFC，在网页或 App Clip 里入场、结账和操作设备。";
+/** Platforms before per-resource billing refused billing commands shop-wide. */
 const BILLING_DISABLED_NOTICE = "本店未启用计费";
+/** The bot's resource has no plan, so there is nothing to enter. */
+const RESOURCE_NOT_BILLED_NOTICE = "这里不计费，无需入场";
 
 /* --------------------------- platform connection --------------------------- */
 
@@ -1734,6 +1740,7 @@ export function humanReadableBotError(error: PrismBotClientError): string {
   if (error.code === "INVALID_PLATFORM_IDENTITY") return error.message;
   if (error.code === "BOT_DISABLED") return "Bot 已被店铺停用";
   if (error.code === "BILLING_DISABLED") return BILLING_DISABLED_NOTICE;
+  if (error.code === "RESOURCE_NOT_BILLED") return RESOURCE_NOT_BILLED_NOTICE;
   if (error.code === "PLAYER_HAS_NO_UNSETTLED_SESSIONS") {
     return "您当前没有未结算的账单，无需结账。";
   }
