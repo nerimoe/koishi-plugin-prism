@@ -679,14 +679,15 @@ describe("applyPrismKoishiPlugin", () => {
     expect(listResult).toContain("🎀hanahana🎀");
   });
 
-  it("prints the platform's roster: each person once, resources with their head count and capacity", async () => {
+  it("prints the platform's roster: each person once, resources with their head count and capacity, everyone else together", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient({ mahjongTables: [mahjongTable] });
     const member = (n: number, name?: string) => ({ playerId: `player-${n}`, displayName: name ?? `后台 ${n}`, identities: [{ provider: "onebot", subject: String(n) }] });
     client.roster = async () => ({
       total: 6,
       groups: [
-        { kind: "plan", id: "music", name: "音乐游戏", members: [member(1), member(2)] },
+        { kind: "plan", id: "music", name: "音乐游戏", members: [member(1)] },
+        { kind: "plan", id: "rest", name: "休息区", members: [member(2)] },
         { kind: "resource", id: "cab", name: "maimai", capacity: 2, members: [member(5)] },
         { kind: "resource", id: "table-a", name: "🀄️ 大洋化学", capacity: 4, members: [member(3), member(4), member(6, "等位玩家")] },
       ],
@@ -699,9 +700,10 @@ describe("applyPrismKoishiPlugin", () => {
     const result = await registered.get("list [name:text]")?.action({ session: { userId: "1" } });
     expect(result).toBe([
       "[总计 6 人]",
-      "\n音乐游戏 ( 2人 )：\n- Player 1, - Player 2",
       "\nmaimai ( 1/2 )：\n- Player 5",
       "\n🀄️ 大洋化学 ( 3/4 )：\n- Player 3, - Player 4, - 等位玩家",
+      // Not split by the plan they bill.
+      "\n其他 ( 2人 )：\n- Player 1, - Player 2",
     ].join("\n"));
   });
 
@@ -1772,6 +1774,52 @@ describe("the bot's settings from the platform", () => {
       [["onebot:123456789"], "舞萌、中二 闲置中，5 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟"],
       [["onebot:123456789"], "店里没人，4 分钟后全部关机"],
     ]);
+  });
+
+  it("announces what happens at the shop as its settings say, once per swipe, and not what it did itself", async () => {
+    const broadcasts: Array<[string[], string]> = [];
+    const platform = fakePlatform(() => null, {
+      settings: { eventChannelIds: ["onebot:42"], announcePower: true, announceCards: true, announceStarts: true },
+    });
+    applyPrismKoishiPlugin({
+      ...createMockKoishiContext(new Map()),
+      async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
+    }, { ...connection, socket: platform.factory, resolveDisplayName: (subject: string) => `Player ${subject}` });
+    await platform.connected();
+    const alice = { playerId: "p1", displayName: "Alice", identities: [{ provider: "onebot", subject: "7" }] };
+    const place = { resourceId: "m1", resourceName: "舞萌" };
+    platform.push("shop.event", { ...place, kind: "power", state: "on", by: "player", player: alice });
+    // A swipe that starts someone is one message, said as a start.
+    platform.push("shop.event", { ...place, kind: "card", player: alice, started: true });
+    platform.push("shop.event", { ...place, kind: "card", player: alice, started: false });
+    platform.push("shop.event", { ...place, kind: "card", player: null, started: false });
+    platform.push("shop.event", { ...place, kind: "power", state: "off", by: "system", player: null });
+    // This bot's own command: it has answered it already.
+    platform.push("shop.event", { ...place, kind: "power", state: "off", by: "player", player: alice, botId: "bot-1" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(broadcasts).toEqual([
+      [["onebot:42"], "✅ 舞萌 已开机（Player 7）"],
+      [["onebot:42"], "🎮 Player 7 在 舞萌 刷卡上机"],
+      [["onebot:42"], "💳 Player 7 在 舞萌 刷卡"],
+      [["onebot:42"], "💳 未绑定的卡 在 舞萌 刷卡"],
+      [["onebot:42"], "💤 舞萌 闲置，已自动关机"],
+    ]);
+  });
+
+  it("announces only the kinds it is told to, and a start as a swipe when starts are off", async () => {
+    const broadcasts: Array<[string[], string]> = [];
+    const platform = fakePlatform(() => null, { settings: { eventChannelIds: ["onebot:42"], announceCards: true } });
+    applyPrismKoishiPlugin({
+      ...createMockKoishiContext(new Map()),
+      async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
+    }, { ...connection, socket: platform.factory });
+    await platform.connected();
+    const bob = { playerId: "p2", displayName: "Bob", identities: [] };
+    platform.push("shop.event", { resourceId: "m1", resourceName: "中二", kind: "power", state: "on", by: "staff", player: null });
+    platform.push("shop.event", { resourceId: "m1", resourceName: "中二", kind: "card", player: bob, started: true });
+    platform.push("shop.event", { resourceId: "m1", resourceName: "中二", kind: "occupancy", player: bob });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(broadcasts).toEqual([[["onebot:42"], "💳 Bob 在 中二 刷卡"]]);
   });
 
   it("rereads them and says hello again when the shop changes them", async () => {

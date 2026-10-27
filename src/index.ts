@@ -52,6 +52,11 @@ export type BotConfig = {
     idleChannelIds: string[];
     /** How many minutes before an idle power-off to tell them; 0 for never. */
     idleReminderMinutes: number;
+    /** Channels (`platform:channelId`) told what happens at the shop, and which of it. */
+    eventChannelIds: string[];
+    announcePower: boolean;
+    announceCards: boolean;
+    announceStarts: boolean;
   };
   /** Which shop this credential belongs to; the shop code is no longer configured by hand. */
   shop?: { code: string; name: string };
@@ -200,6 +205,9 @@ type ActivePlayer = {
 };
 
 type PlayerGroup = { label: string; capacity?: number; players: ActivePlayer[] };
+
+/** Where `list` puts players who occupy no resource. */
+const OTHER_PLAYERS_LABEL = "其他";
 
 /** `GET integration/roster`: each person once, in one group. */
 type RosterView = {
@@ -865,6 +873,14 @@ class PrismApiClient {
 
 type IdleReminder = { reason: "shop_empty" | "device_idle"; at: number; devices: Array<{ id: string; name: string }> };
 
+type EventPlayer = { playerId: string; displayName: string | null; identities: Array<{ provider: string; subject: string }> };
+/** What the platform tells bots happened at the shop; see PRiSM's resources/shop-events.ts. */
+type ShopEvent = { resourceId: string; resourceName: string; botId?: string } & (
+  | { kind: "power"; state: "on" | "off"; by: "player" | "staff" | "system"; player: EventPlayer | null }
+  | { kind: "card"; player: EventPlayer | null; started: boolean }
+  | { kind: "occupancy"; player: EventPlayer }
+);
+
 class PrismKoishiService {
   private readonly logoutInFlight = new Map<string, Promise<string>>();
   private readonly client: any;
@@ -874,6 +890,8 @@ class PrismKoishiService {
   private readonly watcher: HaWatcher | null = null;
   /** The bot's settings as last read; null until read, and again once the shop disables the bot. */
   private bot: BotConfig | null = null;
+  /** Announcements still being sent; each waits for the one before. */
+  private announcing: Promise<void> = Promise.resolve();
   /** The read in flight, shared by commands arriving together. */
   private reading: Promise<BotConfig> | null = null;
   private reads = 0;
@@ -905,6 +923,10 @@ class PrismKoishiService {
       () => this.hello(),
       (event) => {
         if (event.event === "idle.reminder") void this.remindIdle(event.data as IdleReminder);
+        // One at a time, so the channels read them in the order they happened.
+        else if (event.event === "shop.event") this.announcing = this.announcing
+          .then(() => this.announce(event.data as ShopEvent))
+          .catch((error) => this.logger?.warn("PRiSM event announcement failed", error));
       },
       this.logger,
       this.watcher
@@ -1000,6 +1022,52 @@ class PrismKoishiService {
       if (error instanceof PrismBotClientError && error.status > 0) return error.message || "绑定失败，请重新生成验证码";
       throw error;
     }
+  }
+
+  /**
+   * Tell the configured channels what happened, if this bot announces that kind
+   * of thing. A card that put its owner on the cabinet is one message: a start
+   * when starts are announced, otherwise a card. What this bot's own command
+   * did is left out: the bot has answered the command already.
+   */
+  async announce(event: ShopEvent): Promise<void> {
+    const bot = this.bot;
+    const channels = bot?.settings.eventChannelIds ?? [];
+    if (!bot || !channels.length || typeof this.ctx.broadcast !== "function") return;
+    if (event.botId && event.botId === bot.bot.id) return;
+    const message = await this.announcement(event, bot.settings);
+    if (!message) return;
+    try {
+      await this.ctx.broadcast(channels, message);
+    } catch (error) {
+      this.logger?.warn("PRiSM event announcement failed", error);
+    }
+  }
+
+  private async announcement(event: ShopEvent, settings: BotConfig["settings"]): Promise<string | null> {
+    const place = event.resourceName || event.resourceId;
+    const who = async () => {
+      if (!event.player) return "未绑定的卡";
+      // Named as the platform the channels are on would name them, when it can.
+      const provider = event.player.identities[0]?.provider ?? "";
+      return this.displayNameForPlayer({
+        playerId: event.player.playerId,
+        displayName: event.player.displayName ?? undefined,
+        sessions: [{ playerDisplayName: event.player.displayName ?? undefined, identities: event.player.identities }],
+      }, provider);
+    };
+    if (event.kind === "power") {
+      if (!settings.announcePower) return null;
+      if (event.by === "system") return event.state === "off" ? `💤 ${place} 闲置，已自动关机` : `✅ ${place} 已开机`;
+      const by = event.player ? `（${await who()}）` : "";
+      return event.state === "on" ? `✅ ${place} 已开机${by}` : `🛑 ${place} 已关机${by}`;
+    }
+    if (event.kind === "card") {
+      if (event.started && settings.announceStarts) return `🎮 ${await who()} 在 ${place} 刷卡上机`;
+      return settings.announceCards ? `💳 ${await who()} 在 ${place} 刷卡` : null;
+    }
+    if (event.kind === "occupancy") return settings.announceStarts ? `🎮 ${await who()} 在 ${place} 上机` : null;
+    return null;
   }
 
   /** Tell the configured channels a power-off is coming. Short: they can read a device name. */
@@ -1436,7 +1504,12 @@ class PrismKoishiService {
     if (wanted && only && !only.players.length) {
       return only.capacity !== undefined ? `${only.label} ( 0/${only.capacity} )` : `${only.label} ( 0人 )`;
     }
-    return formatPlayerGroups(groups);
+    if (wanted) return formatPlayerGroups(groups);
+    // The whole shop: players on a resource are listed there, everyone else together,
+    // whatever plan they bill. Asking for a plan by name still lists that plan.
+    const onResources = groups.filter((group) => group.capacity !== undefined);
+    const others = groups.filter((group) => group.capacity === undefined).flatMap((group) => group.players);
+    return formatPlayerGroups([...onResources, ...(others.length ? [{ label: OTHER_PLAYERS_LABEL, players: others }] : [])]);
   }
 
   async listDeviceStates(rawAlias?: string): Promise<string> {
@@ -1868,6 +1941,10 @@ function parseBotConfig(value: unknown): BotConfig {
       receiptsToStaff: settings.receiptsToStaff === true,
       idleChannelIds: strings(settings.idleChannelIds),
       idleReminderMinutes: Math.max(0, Number(settings.idleReminderMinutes ?? 5) || 0),
+      eventChannelIds: strings(settings.eventChannelIds),
+      announcePower: settings.announcePower === true,
+      announceCards: settings.announceCards === true,
+      announceStarts: settings.announceStarts === true,
     },
     billingEnabled: record.billingEnabled !== false,
     currencyName: cleanText(record.currencyName) || "余额",
