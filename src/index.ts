@@ -55,6 +55,8 @@ export type BotConfig = {
   };
   /** Which shop this credential belongs to; the shop code is no longer configured by hand. */
   shop?: { code: string; name: string };
+  /** Whether entering through this bot bills: its own plan, otherwise its resource group's. */
+  billingEnabled: boolean;
   currencyName: string;
   /** Staff are these platform identities. */
   staff: Array<{ provider: string; subject: string }>;
@@ -225,11 +227,12 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
   type Handler = (context: KoishiActionContext, ...args: string[]) => Promise<string> | string;
   /**
    * `effect`: starts billing, settles a bill or drives a device, so read-only mode
-   * leaves it to staff. Whether something bills is the platform's answer: the
-   * bot's resource group (or its own plan) decides what entry starts.
+   * leaves it to staff. `entry`: starts this bot's plan, which there is none of
+   * when the bot's resource group is free; everything else a player owes or
+   * holds spans the shop, so the platform answers it.
    * `offline`: answers without the bot's settings, as `versions` must.
    */
-  type Gate = { effect?: boolean; offline?: boolean };
+  type Gate = { effect?: boolean; entry?: boolean; offline?: boolean };
 
   const wrap = (handler: Handler, gate: Gate = {}) => async (context: KoishiActionContext, ...args: string[]): Promise<string> => {
     const quoted = (message: string) =>
@@ -241,6 +244,7 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
         if (gate.effect && bot.settings.playerCommands === "readonly" && !service.isStaff(bot, await service.sender(context))) {
           return quoted(bot.settings.readOnlyNotice || DEFAULT_READ_ONLY_NOTICE);
         }
+        if (gate.entry && !bot.billingEnabled) return quoted(RESOURCE_NOT_BILLED_NOTICE);
       }
       return quoted(await handler(context, ...args));
     } catch (error) {
@@ -249,6 +253,7 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
   };
 
   const effect = (handler: Handler, gate: Gate = {}) => wrap(handler, { ...gate, effect: true });
+  const entry = { entry: true };
 
   const bind = wrap(async (context, code) => service.bind(await service.sender(context), code));
   ctx.command("bind <code:string>", "绑定网页登录账号到当前平台身份").action(bind);
@@ -257,11 +262,11 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
 
   ctx.command("login [target:user]", "开启玩家计费场次").action(effect(async (context, target) =>
     service.loginForTarget(await service.sender(context), target, context.session?.bot),
-  ));
+  entry));
 
   ctx.command("入场 [target:user]", "入场").action(effect(async (context, target) =>
     service.loginForTarget(await service.sender(context), target, context.session?.bot),
-  ));
+  entry));
 
   ctx.command("mahjong <tableId>", "加入指定麻将桌").action(effect(async (context, tableId) =>
     service.mahjongJoin(await service.sender(context), tableId),
@@ -1864,6 +1869,7 @@ function parseBotConfig(value: unknown): BotConfig {
       idleChannelIds: strings(settings.idleChannelIds),
       idleReminderMinutes: Math.max(0, Number(settings.idleReminderMinutes ?? 5) || 0),
     },
+    billingEnabled: record.billingEnabled !== false,
     currencyName: cleanText(record.currencyName) || "余额",
     staff: (Array.isArray(record.staff) ? record.staff : [])
       .map((identity: UncheckedRecord) => ({ provider: cleanText(identity?.provider).toLowerCase(), subject: cleanText(identity?.subject) }))
