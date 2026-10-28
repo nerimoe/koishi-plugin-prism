@@ -767,8 +767,54 @@ describe("applyPrismKoishiPlugin", () => {
     expect(redeemResult).toContain("兑换成功");
   });
 
-  it("returns the generated TTLock temporary password from lock", async () => {
+  it("hands out the door code with entry only when the shop asks for it", async () => {
+    const off = new Map<string, RegisteredCommand>();
+    const quiet = createDefaultClient({ door: { id: "door-7", name: "侧门" } });
+    applyPrismKoishiPlugin(createMockKoishiContext(off), { client: quiet as any });
+    await expect(off.get("login [target:user]")!.action({ session: { userId: "123456" } })).resolves.toBe("✅ 入场成功");
+    expect(quiet.calls.some((call) => call[0] === "requestDeviceCommandByIdentity")).toBe(false);
+
+    const on = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient({ door: { id: "door-7", name: "侧门" }, settings: { doorPasswordOnEntry: true } });
+    client.requestDeviceCommandByIdentity = async (identity: unknown, body: unknown) => {
+      client.calls.push(["requestDeviceCommandByIdentity", identity, body]);
+      return { action: { executorKind: "ttlock", status: "acked", payload: { temporaryPassword: "12345678" } } };
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(on), { client: client as any });
+    await expect(on.get("login [target:user]")!.action({ session: { userId: "123456" } })).resolves.toBe(
+      "✅ 入场成功\n🔑 临时门锁密码：12345678\n有效期：3 分钟",
+    );
+    // The door opens for this bot's door, after the entry that succeeded.
+    expect(client.calls.findIndex((call) => call[0] === "startSessionByIdentity"))
+      .toBeLessThan(client.calls.findIndex((call) => call[0] === "requestDeviceCommandByIdentity"));
+    expect(client.calls).toContainEqual(["requestDeviceCommandByIdentity", expect.anything(), {
+      type: "door.open",
+      target: { kind: "facility", ref: "door-7" },
+    }]);
+  });
+
+  it("keeps the entry when the door code cannot be made", async () => {
     const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient({ door: { id: "door-7", name: "侧门" }, settings: { doorPasswordOnEntry: true } });
+    client.requestDeviceCommandByIdentity = async () => {
+      throw new PrismBotClientError("boom", "DEVICE_UNAVAILABLE", 409, null);
+    };
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    const result = await registered.get("login [target:user]")!.action({ session: { userId: "123456" } });
+    // Said in one line, with the way out the player has; entry stays.
+    expect(result).toBe("✅ 入场成功\n🔑 门锁临时密码没有生成，可以在入场后用 lock 再取一次");
+    expect(result).not.toMatch(/\d{8}/);
+  });
+
+  it("does not reach for a door the bot does not have when entering", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient({ door: null, settings: { doorPasswordOnEntry: true } });
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    await expect(registered.get("login [target:user]")!.action({ session: { userId: "123456" } })).resolves.toBe("✅ 入场成功");
+    expect(client.calls.some((call) => call[0] === "requestDeviceCommandByIdentity")).toBe(false);
+  });
+
+  it("returns the generated TTLock temporary password from lock", async () => {    const registered = new Map<string, RegisteredCommand>();
     const client = createDefaultClient();
     client.requestDeviceCommandByIdentity = async () => ({
       action: {

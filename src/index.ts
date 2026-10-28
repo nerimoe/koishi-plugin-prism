@@ -48,6 +48,8 @@ export type BotConfig = {
     powerOffStaffOnly: boolean;
     /** Staff on the same platform get checkout receipts privately. */
     receiptsToStaff: boolean;
+    /** `login`/`入场` also hands out the door code. */
+    doorPasswordOnEntry: boolean;
     /** Channels (`platform:channelId`) the shop says everything in: idle warnings and what happens. */
     announceChannelIds: string[];
     /** How many minutes before an idle power-off to tell them; 0 for never. */
@@ -1125,7 +1127,13 @@ class PrismKoishiService {
       // Starting the plan may end one it cannot bill together with.
       const stopped = Array.isArray(result?.billing?.stopped) ? result.billing.stopped.filter((name: unknown) => typeof name === "string" && name) : [];
       const ended = stopped.length ? `\n结束方案：${stopped.join("、")}` : "";
-      return (isTargeted ? `✅ 已为用户 ${formatPlayerReference(sender)} 入场成功` : "✅ 入场成功") + ended;
+      const message = (isTargeted ? `✅ 已为用户 ${formatPlayerReference(sender)} 入场成功` : "✅ 入场成功") + ended;
+      // Entering and getting the door code as one command, when the shop asks
+      // for it. A door that fails must not undo an entry that succeeded.
+      const settings = (await this.config());
+      return settings.settings.doorPasswordOnEntry && settings.door
+        ? `${message}\n${await this.doorCode(sender, settings.door, true)}`
+        : message;
     }, bot);
   }
 
@@ -1395,6 +1403,15 @@ class PrismKoishiService {
   async lock(sender: Sender): Promise<string> {
     const door = (await this.config()).door;
     if (!door) return "🔑 本店还没有设置 Bot 开的门";
+    return this.doorCode(sender, door, false);
+  }
+
+  /**
+   * The door code, or why there is none. `onEntry` marks the copy that rides
+   * along with a successful entry: there the failure is said in one line and
+   * never takes the entry down with it.
+   */
+  private async doorCode(sender: Sender, door: { id: string; name: string }, onEntry: boolean): Promise<string> {
     try {
       const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
         type: "door.open",
@@ -1403,17 +1420,17 @@ class PrismKoishiService {
       const failure = this.getCommandFailureMessage(result);
       if (failure) {
         this.logDeviceCommandFailure(result);
-        return `🔑 开门失败，${deviceCommandFailureReason(result)}`;
+        return onEntry ? "🔑 门锁临时密码没有生成，可以在入场后用 lock 再取一次" : `🔑 开门失败，${deviceCommandFailureReason(result)}`;
       }
       if (result?.action?.executorKind && result.action.executorKind !== "ttlock") {
         return "🔑 门锁指令已发送";
       }
       const password = cleanText(result?.action?.payload?.temporaryPassword);
-      if (!password) return "🔑 临时门锁密码生成失败，请稍后再试";
+      if (!password) return onEntry ? "🔑 门锁临时密码没有生成，可以在入场后用 lock 再取一次" : "🔑 临时门锁密码生成失败，请稍后再试";
       return `🔑 临时门锁密码：${password}\n有效期：3 分钟`;
     } catch (error) {
       this.logCommandError(error);
-      return `🔑 开门失败，${deviceActionFailureReason(error)}`;
+      return onEntry ? "🔑 门锁临时密码没有生成，可以在入场后用 lock 再取一次" : `🔑 开门失败，${deviceActionFailureReason(error)}`;
     }
   }
 
@@ -1950,6 +1967,7 @@ function parseBotConfig(value: unknown): BotConfig {
       staffCommands: settings.staffCommands !== false,
       powerOffStaffOnly: settings.powerOffStaffOnly === true,
       receiptsToStaff: settings.receiptsToStaff === true,
+      doorPasswordOnEntry: settings.doorPasswordOnEntry === true,
       announceChannelIds: strings(settings.announceChannelIds),
       idleReminderMinutes: Math.max(0, Number(settings.idleReminderMinutes ?? 5) || 0),
       announceIdle: settings.announceIdle === true,
