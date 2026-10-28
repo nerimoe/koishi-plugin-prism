@@ -48,15 +48,18 @@ export type BotConfig = {
     powerOffStaffOnly: boolean;
     /** Staff on the same platform get checkout receipts privately. */
     receiptsToStaff: boolean;
-    /** Channels (`platform:channelId`) told before an idle power-off. */
-    idleChannelIds: string[];
+    /** `login`/`入场` also hands out the door code. */
+    doorPasswordOnEntry: boolean;
+    /** Channels (`platform:channelId`) the shop says everything in: idle warnings and what happens. */
+    announceChannelIds: string[];
     /** How many minutes before an idle power-off to tell them; 0 for never. */
     idleReminderMinutes: number;
-    /** Channels (`platform:channelId`) told what happens at the shop, and which of it. */
-    eventChannelIds: string[];
+    /** Which news is told, each on its own. */
+    announceIdle: boolean;
     announcePower: boolean;
-    announceCards: boolean;
     announceStarts: boolean;
+    announceCards: boolean;
+    announceCoins: boolean;
   };
   /** Which shop this credential belongs to; the shop code is no longer configured by hand. */
   shop?: { code: string; name: string };
@@ -878,6 +881,7 @@ type EventPlayer = { playerId: string; displayName: string | null; identities: A
 type ShopEvent = { resourceId: string; resourceName: string; botId?: string } & (
   | { kind: "power"; state: "on" | "off"; by: "player" | "staff" | "system"; player: EventPlayer | null }
   | { kind: "card"; player: EventPlayer | null; started: boolean }
+  | { kind: "coin"; player: EventPlayer | null; started: boolean }
   | { kind: "occupancy"; player: EventPlayer }
 );
 
@@ -1004,8 +1008,11 @@ class PrismKoishiService {
       name: bot.bot.name,
       // Saying so is what makes the platform consider this bot for the watch.
       ...(this.watching ? { ha: true } : {}),
-      // Without anywhere to send it, the platform need not plan a reminder.
-      ...(settings.idleChannelIds.length && settings.idleReminderMinutes > 0 ? { reminderLeadSeconds: settings.idleReminderMinutes * 60 } : {}),
+      // Without anywhere to send it, or with idle news switched off, the
+      // platform need not plan a reminder.
+      ...(settings.announceIdle && settings.announceChannelIds.length && settings.idleReminderMinutes > 0
+        ? { reminderLeadSeconds: settings.idleReminderMinutes * 60 }
+        : {}),
     };
   }
 
@@ -1027,12 +1034,13 @@ class PrismKoishiService {
   /**
    * Tell the configured channels what happened, if this bot announces that kind
    * of thing. A card that put its owner on the cabinet is one message: a start
-   * when starts are announced, otherwise a card. What this bot's own command
-   * did is left out: the bot has answered the command already.
+   * when starts are announced, otherwise a card; a coin that did is the same.
+   * What this bot's own command did is left out: the bot has answered the
+   * command already.
    */
   async announce(event: ShopEvent): Promise<void> {
     const bot = this.bot;
-    const channels = bot?.settings.eventChannelIds ?? [];
+    const channels = bot?.settings.announceChannelIds ?? [];
     if (!bot || !channels.length || typeof this.ctx.broadcast !== "function") return;
     if (event.botId && event.botId === bot.bot.id) return;
     const message = await this.announcement(event, bot.settings);
@@ -1066,14 +1074,19 @@ class PrismKoishiService {
       if (event.started && settings.announceStarts) return `🎮 ${await who()} 在 ${place} 刷卡上机`;
       return settings.announceCards ? `💳 ${await who()} 在 ${place} 刷卡` : null;
     }
+    if (event.kind === "coin") {
+      if (event.started && settings.announceStarts) return `🎮 ${await who()} 在 ${place} 投币上机`;
+      return settings.announceCoins ? `🪙 ${await who()} 在 ${place} 投币` : null;
+    }
     if (event.kind === "occupancy") return settings.announceStarts ? `🎮 ${await who()} 在 ${place} 上机` : null;
     return null;
   }
 
-  /** Tell the configured channels a power-off is coming. Short: they can read a device name. */
+  /** Tell the configured channels a power-off is coming, when the shop asks for it. */
   async remindIdle(reminder: IdleReminder): Promise<void> {
-    const channels = this.bot?.settings.idleChannelIds ?? [];
-    if (!channels.length || typeof this.ctx.broadcast !== "function") return;
+    const settings = this.bot?.settings;
+    const channels = settings?.announceChannelIds ?? [];
+    if (!settings?.announceIdle || !channels.length || typeof this.ctx.broadcast !== "function") return;
     const now = (this.options.now?.() ?? new Date()).getTime();
     const minutes = Math.max(1, Math.round((reminder.at - now) / 60_000));
     const names = reminder.devices.map((device) => device.name).join("、");
@@ -1114,7 +1127,13 @@ class PrismKoishiService {
       // Starting the plan may end one it cannot bill together with.
       const stopped = Array.isArray(result?.billing?.stopped) ? result.billing.stopped.filter((name: unknown) => typeof name === "string" && name) : [];
       const ended = stopped.length ? `\n结束方案：${stopped.join("、")}` : "";
-      return (isTargeted ? `✅ 已为用户 ${formatPlayerReference(sender)} 入场成功` : "✅ 入场成功") + ended;
+      const message = (isTargeted ? `✅ 已为用户 ${formatPlayerReference(sender)} 入场成功` : "✅ 入场成功") + ended;
+      // Entering and getting the door code as one command, when the shop asks
+      // for it. A door that fails must not undo an entry that succeeded.
+      const settings = (await this.config());
+      return settings.settings.doorPasswordOnEntry && settings.door
+        ? `${message}\n${await this.doorCode(sender, settings.door, true)}`
+        : message;
     }, bot);
   }
 
@@ -1384,6 +1403,15 @@ class PrismKoishiService {
   async lock(sender: Sender): Promise<string> {
     const door = (await this.config()).door;
     if (!door) return "🔑 本店还没有设置 Bot 开的门";
+    return this.doorCode(sender, door, false);
+  }
+
+  /**
+   * The door code, or why there is none. `onEntry` marks the copy that rides
+   * along with a successful entry: there the failure is said in one line and
+   * never takes the entry down with it.
+   */
+  private async doorCode(sender: Sender, door: { id: string; name: string }, onEntry: boolean): Promise<string> {
     try {
       const result = await this.client.requestDeviceCommandByIdentity(this.identity(sender), {
         type: "door.open",
@@ -1392,17 +1420,17 @@ class PrismKoishiService {
       const failure = this.getCommandFailureMessage(result);
       if (failure) {
         this.logDeviceCommandFailure(result);
-        return `🔑 开门失败，${deviceCommandFailureReason(result)}`;
+        return onEntry ? "🔑 门锁临时密码没有生成，可以在入场后用 lock 再取一次" : `🔑 开门失败，${deviceCommandFailureReason(result)}`;
       }
       if (result?.action?.executorKind && result.action.executorKind !== "ttlock") {
         return "🔑 门锁指令已发送";
       }
       const password = cleanText(result?.action?.payload?.temporaryPassword);
-      if (!password) return "🔑 临时门锁密码生成失败，请稍后再试";
+      if (!password) return onEntry ? "🔑 门锁临时密码没有生成，可以在入场后用 lock 再取一次" : "🔑 临时门锁密码生成失败，请稍后再试";
       return `🔑 临时门锁密码：${password}\n有效期：3 分钟`;
     } catch (error) {
       this.logCommandError(error);
-      return `🔑 开门失败，${deviceActionFailureReason(error)}`;
+      return onEntry ? "🔑 门锁临时密码没有生成，可以在入场后用 lock 再取一次" : `🔑 开门失败，${deviceActionFailureReason(error)}`;
     }
   }
 
@@ -1939,12 +1967,14 @@ function parseBotConfig(value: unknown): BotConfig {
       staffCommands: settings.staffCommands !== false,
       powerOffStaffOnly: settings.powerOffStaffOnly === true,
       receiptsToStaff: settings.receiptsToStaff === true,
-      idleChannelIds: strings(settings.idleChannelIds),
+      doorPasswordOnEntry: settings.doorPasswordOnEntry === true,
+      announceChannelIds: strings(settings.announceChannelIds),
       idleReminderMinutes: Math.max(0, Number(settings.idleReminderMinutes ?? 5) || 0),
-      eventChannelIds: strings(settings.eventChannelIds),
+      announceIdle: settings.announceIdle === true,
       announcePower: settings.announcePower === true,
-      announceCards: settings.announceCards === true,
       announceStarts: settings.announceStarts === true,
+      announceCards: settings.announceCards === true,
+      announceCoins: settings.announceCoins === true,
     },
     billingEnabled: record.billingEnabled !== false,
     currencyName: cleanText(record.currencyName) || "余额",
