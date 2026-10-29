@@ -129,8 +129,12 @@ export type KoishiLikeContext = {
   logger?(name: string): {
     warn(...args: unknown[]): void;
   };
-  /** Send to channels as `platform:channelId`. */
-  broadcast?(channels: string[], content: string): Promise<unknown>;
+  bots?: Array<{
+    platform: string;
+    isActive: boolean;
+    sendMessage(channelId: string, content: string): Promise<unknown>;
+    sendPrivateMessage(userId: string, content: string): Promise<unknown>;
+  }>;
   on?(event: "dispose", listener: () => void): void;
 };
 
@@ -1041,14 +1045,28 @@ class PrismKoishiService {
   async announce(event: ShopEvent): Promise<void> {
     const bot = this.bot;
     const channels = bot?.settings.announceChannelIds ?? [];
-    if (!bot || !channels.length || typeof this.ctx.broadcast !== "function") return;
+    if (!bot || !channels.length) return;
     if (event.botId && event.botId === bot.bot.id) return;
     const message = await this.announcement(event, bot.settings);
     if (!message) return;
-    try {
-      await this.ctx.broadcast(channels, message);
-    } catch (error) {
-      this.logger?.warn("PRiSM event announcement failed", error);
+    await this.broadcast(channels, message);
+  }
+
+  /** Explicit targets need neither Koishi's channel database nor its mutable broadcast list. */
+  private async broadcast(channels: readonly string[], message: string): Promise<void> {
+    for (const target of channels) {
+      try {
+        const separator = target.indexOf(":");
+        if (separator < 1 || separator === target.length - 1) throw new Error(`无效的播报频道：${target}`);
+        const platform = target.slice(0, separator), channel = target.slice(separator + 1);
+        if (channel === "private:") throw new Error(`无效的私聊目标：${target}`);
+        const bot = this.ctx.bots?.find((bot) => bot.platform === platform && bot.isActive);
+        if (!bot) throw new Error(`没有可用的 ${platform} 机器人`);
+        if (channel.startsWith("private:")) await bot.sendPrivateMessage(channel.slice(8), message);
+        else await bot.sendMessage(channel, message);
+      } catch (error) {
+        this.logger?.warn(`PRiSM announcement to ${target} failed`, error);
+      }
     }
   }
 
@@ -1086,18 +1104,14 @@ class PrismKoishiService {
   async remindIdle(reminder: IdleReminder): Promise<void> {
     const settings = this.bot?.settings;
     const channels = settings?.announceChannelIds ?? [];
-    if (!settings?.announceIdle || !channels.length || typeof this.ctx.broadcast !== "function") return;
+    if (!settings?.announceIdle || !channels.length) return;
     const now = (this.options.now?.() ?? new Date()).getTime();
     const minutes = Math.max(1, Math.round((reminder.at - now) / 60_000));
     const names = reminder.devices.map((device) => device.name).join("、");
     const message = reminder.reason === "shop_empty"
       ? `店里没人，${minutes} 分钟后全部关机`
       : `${names} 闲置中，${minutes} 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟`;
-    try {
-      await this.ctx.broadcast(channels, message);
-    } catch (error) {
-      this.logger?.warn("PRiSM idle reminder failed", error);
-    }
+    await this.broadcast(channels, message);
   }
 
   async sender(context: KoishiActionContext): Promise<Sender> {

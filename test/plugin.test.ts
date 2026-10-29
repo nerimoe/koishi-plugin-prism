@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { Context } from "koishi";
 import { applyPrismKoishiPlugin, Config, humanReadableBotError, PrismBotClientError, version, type BotConfig, type PrismKoishiPluginConfig } from "../src";
 
 type RegisteredCommand = {
@@ -47,6 +48,14 @@ function createMockKoishiContext(registered: Map<string, RegisteredCommand>) {
     },
     setInterval() {},
   };
+}
+
+function announcementBot(broadcasts: Array<[string[], string]>) {
+  return { bots: [{
+    platform: "onebot", isActive: true,
+    async sendMessage(id: string, content: string) { broadcasts.push([[`onebot:${id}`], content]); },
+    async sendPrivateMessage(id: string, content: string) { broadcasts.push([[`onebot:private:${id}`], content]); },
+  }] };
 }
 
 function createLoggedMockKoishiContext(
@@ -1802,6 +1811,63 @@ describe("the bot's settings from the platform", () => {
     expect(never.hellos()).toEqual([{ type: "hello", name: "前台 Bot" }]);
   });
 
+  it("delivers consecutive announcements and idle reminders with a real Koishi context and no database", async () => {
+    const app = new Context();
+    const sent: Array<[string, string]> = [];
+    const platform = fakePlatform(() => null, { settings: {
+      announceChannelIds: ["onebot:42", "onebot:private:7", "discord:guild:channel"],
+      announcePower: true, announceIdle: true,
+    } });
+    app.bots.push(...["onebot", "discord"].map((name) => ({
+      platform: name, isActive: true,
+      async sendMessage(id: string, message: string) { sent.push([`${name}:${id}`, message]); return []; },
+      async sendPrivateMessage(id: string, message: string) { sent.push([`${name}:private:${id}`, message]); return []; },
+    })) as any);
+    app.plugin({ apply(ctx) { applyPrismKoishiPlugin(ctx, { ...connection, socket: platform.factory }); } });
+    try {
+      await platform.connected();
+      const event = { resourceId: "m1", resourceName: "舞萌", kind: "power", state: "on", by: "staff", player: null };
+      for (let i = 0; i < 2; i++) platform.push("shop.event", event);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sent).toEqual(Array(2).fill(["onebot:42", "onebot:private:7", "discord:guild:channel"])
+        .flatMap((targets) => targets.map((target) => [target, "✅ 舞萌 已开机"])));
+      platform.push("idle.reminder", { reason: "shop_empty", at: Date.now() + 60_000, devices: [] });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sent.slice(6)).toEqual(["onebot:42", "onebot:private:7", "discord:guild:channel"]
+        .map((target) => [target, "店里没人，1 分钟后全部关机"]));
+    } finally {
+      await app.stop();
+    }
+  });
+
+  it("skips offline bots and continues other targets and later events after a delivery fails", async () => {
+    const sent: string[] = [], warnings: unknown[][] = [];
+    const platform = fakePlatform(() => null, { settings: {
+      announceChannelIds: ["invalid", "onebot:private:", "telegram:7", "onebot:42", "onebot:43"], announcePower: true,
+    } });
+    let failed = false;
+    const bot = {
+      platform: "onebot", isActive: true,
+      async sendMessage(id: string) {
+        if (id === "42" && !failed) { failed = true; throw new Error("send failed"); }
+        sent.push(id);
+      },
+      async sendPrivateMessage() { throw new Error("unexpected private message"); },
+    };
+    applyPrismKoishiPlugin({
+      ...createLoggedMockKoishiContext(new Map(), warnings),
+      bots: [{ ...bot, isActive: false, async sendMessage() { throw new Error("offline bot used"); } }, bot],
+    }, { ...connection, socket: platform.factory });
+    await platform.connected();
+    for (let i = 0; i < 2; i++) platform.push("shop.event", {
+      resourceId: "m1", resourceName: "舞萌", kind: "power", state: "on", by: "staff", player: null,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(sent).toEqual(["43", "42", "43"]);
+    expect(warnings).toHaveLength(7);
+    expect(warnings[3]![0]).toBe("PRiSM announcement to onebot:42 failed");
+  });
+
   it("announces idle power-offs where the settings say, as early as they say", async () => {
     const registered = new Map<string, RegisteredCommand>();
     const broadcasts: Array<[string[], string]> = [];
@@ -1809,7 +1875,7 @@ describe("the bot's settings from the platform", () => {
     const now = new Date("2026-10-21T12:00:00Z");
     applyPrismKoishiPlugin({
       ...createMockKoishiContext(registered),
-      async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
+      ...announcementBot(broadcasts),
     }, { ...connection, socket: platform.factory, now: () => now });
     await platform.connected();
     expect(platform.hellos()).toEqual([{ type: "hello", name: "前台 Bot", reminderLeadSeconds: 300 }]);
@@ -1829,7 +1895,7 @@ describe("the bot's settings from the platform", () => {
     });
     applyPrismKoishiPlugin({
       ...createMockKoishiContext(new Map()),
-      async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
+      ...announcementBot(broadcasts),
     }, { ...connection, socket: platform.factory, resolveDisplayName: (subject: string) => `Player ${subject}` });
     await platform.connected();
     const alice = { playerId: "p1", displayName: "Alice", identities: [{ provider: "onebot", subject: "7" }] };
@@ -1857,7 +1923,7 @@ describe("the bot's settings from the platform", () => {
     const platform = fakePlatform(() => null, { settings: { announceChannelIds: ["onebot:42"], announceCards: true } });
     applyPrismKoishiPlugin({
       ...createMockKoishiContext(new Map()),
-      async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
+      ...announcementBot(broadcasts),
     }, { ...connection, socket: platform.factory });
     await platform.connected();
     const bob = { playerId: "p2", displayName: "Bob", identities: [] };
@@ -1874,7 +1940,7 @@ describe("the bot's settings from the platform", () => {
     const platform = fakePlatform(() => null, { settings: { announceChannelIds: ["onebot:42"], announceCoins: true } });
     applyPrismKoishiPlugin({
       ...createMockKoishiContext(new Map()),
-      async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
+      ...announcementBot(broadcasts),
     }, { ...connection, socket: platform.factory, resolveDisplayName: (subject: string) => `Player ${subject}` });
     await platform.connected();
     const carol = { playerId: "p3", displayName: "Carol", identities: [{ provider: "onebot", subject: "8" }] };
@@ -1892,7 +1958,7 @@ describe("the bot's settings from the platform", () => {
     const starting = fakePlatform(() => null, { settings: { announceChannelIds: ["onebot:42"], announceCoins: true, announceStarts: true } });
     applyPrismKoishiPlugin({
       ...createMockKoishiContext(new Map()),
-      async broadcast(channels: string[], content: string) { starts.push([channels, content]); },
+      ...announcementBot(starts),
     }, { ...connection, socket: starting.factory, resolveDisplayName: (subject: string) => `Player ${subject}` });
     await starting.connected();
     starting.push("shop.event", { ...place, kind: "coin", player: carol, started: true });
@@ -1910,7 +1976,7 @@ describe("the bot's settings from the platform", () => {
     const quiet = fakePlatform(() => null, { settings: { announceChannelIds: ["onebot:1"], idleReminderMinutes: 5, announceIdle: false } });
     applyPrismKoishiPlugin({
       ...createMockKoishiContext(new Map()),
-      async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); },
+      ...announcementBot(broadcasts),
     }, { ...connection, socket: quiet.factory });
     await quiet.connected();
     quiet.push("idle.reminder", { reason: "device_idle", at: Date.now() + 60_000, devices: [{ id: "m1", name: "舞萌" }] });
