@@ -1,5 +1,5 @@
 import { apiOffsetLabel, formatDateTime, formatHM, formatMD, parseDateTime } from "./display-time.js";
-import { HaWatcher, parseWatch, type HaWatch, type HaFrame } from "./ha-watch.js";
+import { HaWatcher, parseWatch, type HaWatch } from "./ha-watch.js";
 import { h, Schema } from "koishi";
 import packageMetadata from "../package.json";
 
@@ -71,7 +71,6 @@ export type BotConfig = {
   /** The door `lock`/开门 opens. */
   door: { id: string; name: string } | null;
   mahjongTables: Array<{ id: string; name: string; aliases: string[]; capacity: number }>;
-  powerResources: Array<{ id: string; name: string; connectionId: string; entityId: string }>;
 };
 
 export type PrismKoishiPluginConfig = {
@@ -130,12 +129,8 @@ export type KoishiLikeContext = {
   logger?(name: string): {
     warn(...args: unknown[]): void;
   };
-  bots?: Array<{
-    platform: string;
-    isActive: boolean;
-    sendMessage(channelId: string, content: string): Promise<unknown>;
-    sendPrivateMessage(userId: string, content: string): Promise<unknown>;
-  }>;
+  /** Send to channels as `platform:channelId`. */
+  broadcast?(channels: string[], content: string): Promise<unknown>;
   on?(event: "dispose", listener: () => void): void;
 };
 
@@ -901,8 +896,6 @@ class PrismKoishiService {
   private bot: BotConfig | null = null;
   /** Announcements still being sent; each waits for the one before. */
   private announcing: Promise<void> = Promise.resolve();
-  /** The current connection's baseline; a reconnect supplies a fresh full snapshot. */
-  private readonly powerStates = new Map<string, Map<string, string>>();
   /** The read in flight, shared by commands arriving together. */
   private reading: Promise<BotConfig> | null = null;
   private reads = 0;
@@ -926,10 +919,7 @@ class PrismKoishiService {
     // Home Assistant is reached the way the platform is, unless a test stands in for the platform and
     // says nothing about Home Assistant: then there is no watching to offer.
     const haOpen: SocketFactory | null = options.haSocket ?? (options.socket ? null : open);
-    if (haOpen) this.watcher = new HaWatcher(haOpen, (frame) => {
-      this.observePower(frame);
-      this.socket?.send(frame);
-    }, this.logger);
+    if (haOpen) this.watcher = new HaWatcher(haOpen, (frame) => this.socket?.send(frame), this.logger);
     this.socket = new PrismSocket(
       open,
       platformSocketUrl(options.baseUrl),
@@ -938,18 +928,16 @@ class PrismKoishiService {
       (event) => {
         if (event.event === "idle.reminder") void this.remindIdle(event.data as IdleReminder);
         // One at a time, so the channels read them in the order they happened.
-        else if (event.event === "shop.event") this.queueAnnouncement(() => this.announce(event.data as ShopEvent));
+        else if (event.event === "shop.event") this.announcing = this.announcing
+          .then(() => this.announce(event.data as ShopEvent))
+          .catch((error) => this.logger?.warn("PRiSM event announcement failed", error));
       },
       this.logger,
       this.watcher
         ? {
           // Only a bot whose settings allow it watches, whatever the platform asks.
-          onWatch: (watch) => {
-            this.powerStates.clear();
-            if (watch && this.watching) this.watcher!.watch(watch);
-            else this.watcher!.stop();
-          },
-          onClose: () => { this.powerStates.clear(); this.watcher!.stop(); },
+          onWatch: (watch) => (watch && this.watching ? this.watcher!.watch(watch) : this.watcher!.stop()),
+          onClose: () => this.watcher!.stop(),
         }
         : undefined,
     );
@@ -1051,59 +1039,16 @@ class PrismKoishiService {
    * command already.
    */
   async announce(event: ShopEvent): Promise<void> {
-    // Platform power events remain for older plugins; HA is the only trigger here.
-    if (event.kind === "power") return;
     const bot = this.bot;
     const channels = bot?.settings.announceChannelIds ?? [];
-    if (!bot || !channels.length) return;
+    if (!bot || !channels.length || typeof this.ctx.broadcast !== "function") return;
     if (event.botId && event.botId === bot.bot.id) return;
     const message = await this.announcement(event, bot.settings);
     if (!message) return;
-    await this.broadcast(channels, message);
-  }
-
-  private queueAnnouncement(send: () => Promise<void>): void {
-    this.announcing = this.announcing.then(send)
-      .catch((error) => this.logger?.warn("PRiSM event announcement failed", error));
-  }
-
-  private observePower(frame: HaFrame): void {
-    const { connection } = frame.params;
-    if (frame.method === "ha.status") {
-      if (!frame.params.connected) this.powerStates.delete(connection);
-      return;
-    }
-    const { full, states } = frame.params;
-    const previous = full ? new Map<string, string>() : (this.powerStates.get(connection) ?? new Map<string, string>());
-    for (const state of states) {
-      const before = previous.get(state.entity_id);
-      previous.set(state.entity_id, state.state);
-      if ((before !== "on" && before !== "off") || (state.state !== "on" && state.state !== "off") || before === state.state) continue;
-      const bot = this.bot;
-      if (!bot?.settings.announcePower || !bot.settings.announceChannelIds.length) continue;
-      const resources = bot.powerResources.filter((resource) => resource.connectionId === connection && resource.entityId === state.entity_id);
-      if (!resources.length) continue;
-      const message = `${state.state === "on" ? "✅" : "🛑"} ${resources.map((resource) => resource.name).join("、")} 已${state.state === "on" ? "开机" : "关机"}`;
-      this.queueAnnouncement(() => this.broadcast(bot.settings.announceChannelIds, message));
-    }
-    this.powerStates.set(connection, previous);
-  }
-
-  /** Explicit targets need neither Koishi's channel database nor its mutable broadcast list. */
-  private async broadcast(channels: readonly string[], message: string): Promise<void> {
-    for (const target of channels) {
-      try {
-        const separator = target.indexOf(":");
-        if (separator < 1 || separator === target.length - 1) throw new Error(`无效的播报频道：${target}`);
-        const platform = target.slice(0, separator), channel = target.slice(separator + 1);
-        if (channel === "private:") throw new Error(`无效的私聊目标：${target}`);
-        const bot = this.ctx.bots?.find((bot) => bot.platform === platform && bot.isActive);
-        if (!bot) throw new Error(`没有可用的 ${platform} 机器人`);
-        if (channel.startsWith("private:")) await bot.sendPrivateMessage(channel.slice(8), message);
-        else await bot.sendMessage(channel, message);
-      } catch (error) {
-        this.logger?.warn(`PRiSM announcement to ${target} failed`, error);
-      }
+    try {
+      await this.ctx.broadcast(channels, message);
+    } catch (error) {
+      this.logger?.warn("PRiSM event announcement failed", error);
     }
   }
 
@@ -1119,6 +1064,12 @@ class PrismKoishiService {
         sessions: [{ playerDisplayName: event.player.displayName ?? undefined, identities: event.player.identities }],
       }, provider);
     };
+    if (event.kind === "power") {
+      if (!settings.announcePower) return null;
+      if (event.by === "system") return event.state === "off" ? `💤 ${place} 闲置，已自动关机` : `✅ ${place} 已开机`;
+      const by = event.player ? `（${await who()}）` : "";
+      return event.state === "on" ? `✅ ${place} 已开机${by}` : `🛑 ${place} 已关机${by}`;
+    }
     if (event.kind === "card") {
       if (event.started && settings.announceStarts) return `🎮 ${await who()} 在 ${place} 刷卡上机`;
       return settings.announceCards ? `💳 ${await who()} 在 ${place} 刷卡` : null;
@@ -1135,14 +1086,18 @@ class PrismKoishiService {
   async remindIdle(reminder: IdleReminder): Promise<void> {
     const settings = this.bot?.settings;
     const channels = settings?.announceChannelIds ?? [];
-    if (!settings?.announceIdle || !channels.length) return;
+    if (!settings?.announceIdle || !channels.length || typeof this.ctx.broadcast !== "function") return;
     const now = (this.options.now?.() ?? new Date()).getTime();
     const minutes = Math.max(1, Math.round((reminder.at - now) / 60_000));
     const names = reminder.devices.map((device) => device.name).join("、");
     const message = reminder.reason === "shop_empty"
       ? `店里没人，${minutes} 分钟后全部关机`
       : `${names} 闲置中，${minutes} 分钟后关机。已入场的玩家发送 keep 设备名 可以延迟`;
-    await this.broadcast(channels, message);
+    try {
+      await this.ctx.broadcast(channels, message);
+    } catch (error) {
+      this.logger?.warn("PRiSM idle reminder failed", error);
+    }
   }
 
   async sender(context: KoishiActionContext): Promise<Sender> {
@@ -2023,12 +1978,6 @@ function parseBotConfig(value: unknown): BotConfig {
     },
     billingEnabled: record.billingEnabled !== false,
     currencyName: cleanText(record.currencyName) || "余额",
-    powerResources: (Array.isArray(record.powerResources) ? record.powerResources : [])
-      .map((resource: UncheckedRecord) => ({
-        id: cleanText(resource?.id), name: cleanText(resource?.name) || cleanText(resource?.id),
-        connectionId: cleanText(resource?.connectionId), entityId: cleanText(resource?.entityId),
-      }))
-      .filter((resource: BotConfig["powerResources"][number]) => resource.id && resource.connectionId && resource.entityId),
     staff: (Array.isArray(record.staff) ? record.staff : [])
       .map((identity: UncheckedRecord) => ({ provider: cleanText(identity?.provider).toLowerCase(), subject: cleanText(identity?.subject) }))
       .filter((identity: { provider: string; subject: string }) => identity.provider && identity.subject),
