@@ -135,7 +135,7 @@ export function applyEvent(states: Map<string, EntityState>, event: unknown): st
 export function statesFrame(term: number, connection: string, full: boolean, states: Map<string, EntityState>, ids: string[]) {
   return {
     type: "ha",
-    method: "ha.states",
+    method: "ha.states" as const,
     params: {
       term,
       connection,
@@ -151,8 +151,10 @@ export function statesFrame(term: number, connection: string, full: boolean, sta
 }
 
 export function statusFrame(term: number, connection: string, connected: boolean, error: string | null) {
-  return { type: "ha", method: "ha.status", params: { term, connection, connected, error } };
+  return { type: "ha", method: "ha.status" as const, params: { term, connection, connected, error } };
 }
+
+export type HaFrame = ReturnType<typeof statesFrame> | ReturnType<typeof statusFrame>;
 
 /** `http(s)://host[:port]` to the WebSocket API address; null for anything else. */
 export function websocketUrl(base: string): string | null {
@@ -193,7 +195,7 @@ export class HaWatcher {
 
   constructor(
     private readonly open: SocketFactory,
-    private readonly send: (frame: Record_) => void,
+    private readonly send: (frame: HaFrame) => void,
     private readonly logger?: Logger,
     private readonly timing: HaTiming = HA_TIMING,
   ) {}
@@ -221,7 +223,7 @@ export class HaWatcher {
     return generation === this.generation;
   }
 
-  private report(generation: number, frame: Record_) {
+  private report(generation: number, frame: HaFrame) {
     if (!this.current(generation)) return;
     try {
       this.send(frame);

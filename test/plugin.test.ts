@@ -18,6 +18,7 @@ function botConfig(overrides: BotConfigInput = {}): BotConfig {
     staff: [],
     door: { id: "door-1", name: "大门" },
     mahjongTables: [],
+    powerResources: [],
     ...overrides,
     settings: {
       playerCommands: "all",
@@ -1816,7 +1817,7 @@ describe("the bot's settings from the platform", () => {
     const sent: Array<[string, string]> = [];
     const platform = fakePlatform(() => null, { settings: {
       announceChannelIds: ["onebot:42", "onebot:private:7", "discord:guild:channel"],
-      announcePower: true, announceIdle: true,
+      announceCoins: true, announceIdle: true,
     } });
     app.bots.push(...["onebot", "discord"].map((name) => ({
       platform: name, isActive: true,
@@ -1826,11 +1827,11 @@ describe("the bot's settings from the platform", () => {
     app.plugin({ apply(ctx) { applyPrismKoishiPlugin(ctx, { ...connection, socket: platform.factory }); } });
     try {
       await platform.connected();
-      const event = { resourceId: "m1", resourceName: "舞萌", kind: "power", state: "on", by: "staff", player: null };
+      const event = { resourceId: "m1", resourceName: "舞萌", kind: "coin", started: false, player: null };
       for (let i = 0; i < 2; i++) platform.push("shop.event", event);
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(sent).toEqual(Array(2).fill(["onebot:42", "onebot:private:7", "discord:guild:channel"])
-        .flatMap((targets) => targets.map((target) => [target, "✅ 舞萌 已开机"])));
+        .flatMap((targets) => targets.map((target) => [target, "🪙 未绑定的卡 在 舞萌 投币"])));
       platform.push("idle.reminder", { reason: "shop_empty", at: Date.now() + 60_000, devices: [] });
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(sent.slice(6)).toEqual(["onebot:42", "onebot:private:7", "discord:guild:channel"]
@@ -1843,7 +1844,7 @@ describe("the bot's settings from the platform", () => {
   it("skips offline bots and continues other targets and later events after a delivery fails", async () => {
     const sent: string[] = [], warnings: unknown[][] = [];
     const platform = fakePlatform(() => null, { settings: {
-      announceChannelIds: ["invalid", "onebot:private:", "telegram:7", "onebot:42", "onebot:43"], announcePower: true,
+      announceChannelIds: ["invalid", "onebot:private:", "telegram:7", "onebot:42", "onebot:43"], announceCoins: true,
     } });
     let failed = false;
     const bot = {
@@ -1860,7 +1861,7 @@ describe("the bot's settings from the platform", () => {
     }, { ...connection, socket: platform.factory });
     await platform.connected();
     for (let i = 0; i < 2; i++) platform.push("shop.event", {
-      resourceId: "m1", resourceName: "舞萌", kind: "power", state: "on", by: "staff", player: null,
+      resourceId: "m1", resourceName: "舞萌", kind: "coin", started: false, player: null,
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(sent).toEqual(["43", "42", "43"]);
@@ -1910,11 +1911,9 @@ describe("the bot's settings from the platform", () => {
     platform.push("shop.event", { ...place, kind: "power", state: "off", by: "player", player: alice, botId: "bot-1" });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(broadcasts).toEqual([
-      [["onebot:42"], "✅ 舞萌 已开机（Player 7）"],
       [["onebot:42"], "🎮 Player 7 在 舞萌 刷卡上机"],
       [["onebot:42"], "💳 Player 7 在 舞萌 刷卡"],
       [["onebot:42"], "💳 未绑定的卡 在 舞萌 刷卡"],
-      [["onebot:42"], "💤 舞萌 闲置，已自动关机"],
     ]);
   });
 
@@ -2067,6 +2066,69 @@ function fakeHomeAssistant() {
 const watch = { term: 5, connections: [{ id: "ha_1", urls: ["http://ha.local:8123"], token: "reader", entities: ["switch.a"] }] };
 
 describe("watching Home Assistant for the shop", () => {
+  it("announces only locally observed power transitions, merging shared supplies and resetting reconnect baselines", async () => {
+    const broadcasts: Array<[string[], string]> = [], disposes: Array<() => void> = [];
+    const settings = { announceChannelIds: ["onebot:42"], announcePower: true };
+    const powerResources = ["舞萌", "中二"].map((name, i) => ({ id: `m${i}`, name, connectionId: "ha_1", entityId: "switch.a" }));
+    powerResources.push({ id: "other", name: "别的 HA", connectionId: "ha_2", entityId: "switch.a" });
+    const platform = fakePlatform(() => null, { settings, powerResources });
+    const home = fakeHomeAssistant();
+    applyPrismKoishiPlugin({
+      ...createMockKoishiContext(new Map()), ...announcementBot(broadcasts),
+      on(_event, dispose) { disposes.push(dispose); },
+    }, { ...connection, socket: platform.factory, haSocket: home.factory });
+    const say = (state: string, time: number) => home.say(0, { id: 1, type: "event", event: { a: {
+      "switch.a": { s: state, a: {}, lc: time, lu: time },
+    } } });
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      await platform.connected();
+      platform.pushFrame({ type: "ha.watch", watch });
+      home.say(0, { type: "auth_ok" });
+      say("off", 10);
+      platform.push("shop.event", { resourceId: "m0", resourceName: "舞萌", kind: "power", state: "on", by: "system", player: null });
+      await flush();
+      expect(broadcasts).toEqual([]);
+      say("on", 11);
+      say("on", 12);
+      await flush();
+      expect(broadcasts).toEqual([[["onebot:42"], "✅ 舞萌、中二 已开机"]]);
+      say("off", 13);
+      say("unavailable", 14);
+      say("on", 15);
+      say("unknown", 16);
+      say("off", 17);
+      await flush();
+      expect(broadcasts).toEqual([
+        [["onebot:42"], "✅ 舞萌、中二 已开机"], [["onebot:42"], "🛑 舞萌、中二 已关机"],
+      ]);
+      // A new assignment gets a fresh baseline even when the last remembered state differs.
+      platform.pushFrame({ type: "ha.watch", watch: { ...watch, term: 6 } });
+      home.say(1, { type: "auth_ok" });
+      home.say(1, { id: 1, type: "event", event: { a: { "switch.a": { s: "on", a: {}, lc: 20, lu: 20 } } } });
+      await flush();
+      expect(broadcasts).toHaveLength(2);
+      home.say(1, { id: 1, type: "event", event: { c: { "switch.a": { "+": { s: "off", lc: 21, lu: 21 } } } } });
+      await flush();
+      expect(broadcasts.at(-1)).toEqual([["onebot:42"], "🛑 舞萌、中二 已关机"]);
+      // Switching announcements off still advances the local state table.
+      platform.change({ settings: { ...settings, announcePower: false }, powerResources });
+      await platform.connected();
+      home.say(1, { id: 1, type: "event", event: { c: { "switch.a": { "+": { s: "on", lc: 22, lu: 22 } } } } });
+      await flush();
+      expect(broadcasts).toHaveLength(3);
+      platform.change({ settings, powerResources });
+      await platform.connected();
+      home.say(1, { id: 1, type: "event", event: { c: { "switch.a": { "+": { s: "on", lc: 23, lu: 23 } } } } });
+      await flush();
+      expect(broadcasts).toHaveLength(3);
+      home.say(1, { id: 1, type: "event", event: { c: { "switch.a": { "+": { s: "off", lc: 24, lu: 24 } } } } });
+      await flush();
+      expect(broadcasts).toHaveLength(4);
+      expect(platform.frames.filter((frame) => frame.method === "ha.states").length).toBeGreaterThan(3);
+    } finally { for (const dispose of disposes) dispose(); }
+  });
+
   it("says it can, by the name the shop gave it, so the platform may ask", async () => {
     const platform = fakePlatform(() => null, { bot: { id: "bot-1", name: "前台" } });
     const home = fakeHomeAssistant();
