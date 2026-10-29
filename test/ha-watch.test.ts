@@ -276,6 +276,6 @@ describe("what it is made of", () => {
   });
 
   it("has the timings the firmware has", () => {
-    expect(HA_TIMING).toEqual({ connectMs: 10_000, authMs: 10_000, heartbeatMs: 30_000, firstRetryMs: 2_000, maxRetryMs: 60_000 });
+    expect(HA_TIMING).toEqual({ connectMs: 10_000, authMs: 10_000, heartbeatMs: 60_000, firstRetryMs: 2_000, maxRetryMs: 60_000 });
   });
 });
