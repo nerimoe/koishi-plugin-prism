@@ -363,6 +363,30 @@ describe("applyPrismKoishiPlugin", () => {
     ))).toBe("操作失败，请稍后再试。");
   });
 
+  it("returns a visible, specific reply when redemption is refused", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient();
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
+    for (const [code, message] of [
+      ["OPERATION_IN_PROGRESS", "其他操作正在处理中，请稍后再试。"],
+      ["REDEEM_CODE_NOT_FOUND", "兑换码无效，请检查后再试。"],
+      ["REDEEM_CODE_NOT_ACTIVE", "兑换码尚未生效。"],
+      ["REDEEM_CODE_EXPIRED", "兑换码已过期。"],
+      ["PRESENT_EXPIRED", "兑换码已过期。"],
+      ["PRESENT_ARCHIVED", "这份礼物当前无法兑换。"],
+      ["PRESENT_NOT_ACTIVE", "这份礼物当前无法兑换。"],
+      ["REDEEM_CODE_MAX_USE_REACHED", "兑换码已被领完。"],
+      ["PRESENT_ONCE_PER_PLAYER_REDEEMED", "您已经领取过这份礼物，无需重复兑换。"],
+      ["PRESENT_GRANT_LIMIT_REACHED", "您已达到这份礼物的领取上限。"],
+    ] as const) {
+      client.redeemCodeByIdentity = async () => { throw new PrismBotClientError("internal reason", code, 400, {}); };
+      const reply = await registered.get("redeem <code>")!.action({ session: { userId: "123", messageId: "original" } }, "PUBLIC");
+      expect(reply).toContain(message);
+      expect(reply).toContain("original");
+      expect(reply).not.toContain("internal reason");
+    }
+  });
+
   it("configures only how to reach the shop, with the shop code optional", () => {
     const keys = Object.keys((Config as any).dict ?? {});
     expect(keys.sort()).toEqual(["baseUrl", "integrationToken", "shopCode"]);

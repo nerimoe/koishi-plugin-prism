@@ -1839,6 +1839,14 @@ export type Sender = { id: string; name: string; provider: string };
 
 export function humanReadableBotError(error: PrismBotClientError): string {
   if (error.code === "INVALID_PLATFORM_IDENTITY") return error.message;
+  if (error.code === "OPERATION_IN_PROGRESS") return "其他操作正在处理中，请稍后再试。";
+  if (error.code === "REDEEM_CODE_NOT_FOUND") return "兑换码无效，请检查后再试。";
+  if (error.code === "REDEEM_CODE_NOT_ACTIVE") return "兑换码尚未生效。";
+  if (error.code === "REDEEM_CODE_EXPIRED" || error.code === "PRESENT_EXPIRED") return "兑换码已过期。";
+  if (error.code === "PRESENT_NOT_ACTIVE" || error.code === "PRESENT_ARCHIVED") return "这份礼物当前无法兑换。";
+  if (error.code === "REDEEM_CODE_MAX_USE_REACHED") return "兑换码已被领完。";
+  if (error.code === "PRESENT_ONCE_PER_PLAYER_REDEEMED") return "您已经领取过这份礼物，无需重复兑换。";
+  if (error.code === "PRESENT_GRANT_LIMIT_REACHED") return "您已达到这份礼物的领取上限。";
   if (error.code === "BOT_DISABLED") return "Bot 已被店铺停用";
   if (error.code === "BILLING_DISABLED") return BILLING_DISABLED_NOTICE;
   if (error.code === "RESOURCE_NOT_BILLED") return RESOURCE_NOT_BILLED_NOTICE;
