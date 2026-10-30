@@ -410,9 +410,9 @@ describe("applyPrismKoishiPlugin", () => {
       "prism.bind <code:string>",
       "login [target:user]",
       "入场 [target:user]",
-      "mahjong <tableId>",
-      "上桌 [tableId]",
-      "下桌 [tableId]",
+      "mahjong <tableId> [target:user]",
+      "上桌 [tableId] [target:user]",
+      "下桌 [tableId] [target:user]",
       "麻将列表",
       "logout [target:user]",
       "billing [target:user]",
@@ -1119,12 +1119,12 @@ describe("applyPrismKoishiPlugin", () => {
     applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
     const hanahana = { session: { userId: "2034994588", senderName: "hanahana" } };
 
-    await expect(registered.get("上桌 [tableId]")!.action(hanahana, "不存在")).resolves.toContain("未找到麻将桌「不存在」");
-    await expect(registered.get("上桌 [tableId]")!.action(hanahana)).resolves.toContain("请指定麻将桌");
+    await expect(registered.get("上桌 [tableId] [target:user]")!.action(hanahana, "不存在")).resolves.toContain("未找到麻将桌「不存在」");
+    await expect(registered.get("上桌 [tableId] [target:user]")!.action(hanahana)).resolves.toContain("请指定麻将桌");
     expect(client.calls.some((call) => call[0] === "mahjongByIdentity")).toBe(false);
 
     // A player need not enter first: the platform starts billing when the table fills.
-    await expect(registered.get("上桌 [tableId]")!.action(hanahana, "四麻a")).resolves.toBe(
+    await expect(registered.get("上桌 [tableId] [target:user]")!.action(hanahana, "四麻a")).resolves.toBe(
       "已加入 🀄️ 大洋化学，当前 1/4 人，满 4 人开始计费。",
     );
     expect(client.calls).toContainEqual(["mahjongByIdentity", { provider: "onebot", subject: "2034994588", displayName: "hanahana" }, "table-a", "join"]);
@@ -1133,7 +1133,7 @@ describe("applyPrismKoishiPlugin", () => {
       capacity: 4,
       seats: ["1", "2", "3", "4"].map((id) => ({ playerId: `player-${id}`, name: id, mine: id === "4", playing: true })),
     };
-    await expect(registered.get("mahjong <tableId>")!.action(hanahana, "🀄️ 大洋化学")).resolves.toBe(
+    await expect(registered.get("mahjong <tableId> [target:user]")!.action(hanahana, "🀄️ 大洋化学")).resolves.toBe(
       "已加入 🀄️ 大洋化学，麻将计费已开始。当前 4/4 人。",
     );
   });
@@ -1144,10 +1144,9 @@ describe("applyPrismKoishiPlugin", () => {
     applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
     const join = (code: string, message: string, status = 409) => {
       client.mahjongByIdentity = async () => { throw new PrismBotClientError(message, code, status, { error: { code, message } }); };
-      return registered.get("上桌 [tableId]")!.action({ session: { userId: "1" } }, "a");
+      return registered.get("上桌 [tableId] [target:user]")!.action({ session: { userId: "1" } }, "a");
     };
     await expect(join("MAHJONG_TABLE_FULL", "已满桌")).resolves.toBe("「🀄️ 大洋化学」已满桌，请等待本局结束后再上桌。");
-    await expect(join("MAHJONG_ALREADY_SEATED", "请先从当前麻将桌下桌")).resolves.toBe("你已经在另一张麻将桌上，请先 /下桌。");
     await expect(join("MAHJONG_TABLE_NOT_FOUND", "没有找到这张麻将桌", 404)).resolves.toContain("未找到麻将桌「a」");
     await expect(join("PLAYER_SESSION_OUTSIDE_BILLABLE_TIME", "当前不在麻将计费时段")).resolves.toBe("上桌失败，当前不在麻将计费时段");
     // A server fault is not relayed.
@@ -1160,7 +1159,7 @@ describe("applyPrismKoishiPlugin", () => {
     applyPrismKoishiPlugin(createMockKoishiContext(registered), { client: client as any });
     const player = { session: { userId: "1" } };
 
-    await expect(registered.get("下桌 [tableId]")!.action(player)).resolves.toBe("你当前未在任何麻将桌上。");
+    await expect(registered.get("下桌 [tableId] [target:user]")!.action(player)).resolves.toBe("你当前未在任何麻将桌上。");
     expect(client.calls.some((call) => call[0] === "mahjongByIdentity")).toBe(false);
 
     client.tables = [
@@ -1171,15 +1170,37 @@ describe("applyPrismKoishiPlugin", () => {
       ] },
     ];
     client.mahjong = { capacity: 4, seats: [{ playerId: "player-2", name: "2", mine: false, playing: true }] };
-    await expect(registered.get("下桌 [tableId]")!.action(player, "b")).resolves.toBe("你当前不在 B 桌。");
-    await expect(registered.get("下桌 [tableId]")!.action(player)).resolves.toBe("已离开 🀄️ 大洋化学，麻将计费已停止。当前还剩 1/4 人。");
+    await expect(registered.get("下桌 [tableId] [target:user]")!.action(player, "b")).resolves.toBe("你当前不在 B 桌。");
+    await expect(registered.get("下桌 [tableId] [target:user]")!.action(player)).resolves.toBe("已离开 🀄️ 大洋化学，麻将计费已停止。当前还剩 1/4 人。");
     expect(client.calls).toContainEqual(["mahjongByIdentity", expect.objectContaining({ subject: "1" }), "table-a", "leave"]);
 
     // Getting up does not check out; the platform says what still bills.
     client.mahjongByIdentity = async () => ({ mahjong: client.mahjong, billing: { remaining: ["普通游玩"] } });
-    await expect(registered.get("下桌 [tableId]")!.action(player)).resolves.toBe(
+    await expect(registered.get("下桌 [tableId] [target:user]")!.action(player)).resolves.toBe(
       "已离开 🀄️ 大洋化学，麻将计费已停止。当前还剩 1/4 人。\n仍在计费：普通游玩",
     );
+  });
+
+  it("lets only shop staff seat and unseat another player through the normal target check", async () => {
+    const registered = new Map<string, RegisteredCommand>();
+    const client = createDefaultClient({mahjongTables:[mahjongTable], staff:[{provider:"onebot",subject:"admin"}]});
+    client.tables = [{...mahjongTable, seats:[{playerId:"player-1",name:"Neri",playing:false}]}];
+    applyPrismKoishiPlugin(createMockKoishiContext(registered), {client:client as any});
+    const admin = {session:{userId:"admin"}};
+    const player = {session:{userId:"other"}};
+    await expect(registered.get("上桌 [tableId] [target:user]")!.action(player,"a","onebot:target")).resolves.toBe("权限不足");
+    await expect(registered.get("下桌 [tableId] [target:user]")!.action(player,"a","onebot:target")).resolves.toBe("权限不足");
+    expect(client.calls.some(c=>c[0] === "mahjongByIdentity")).toBe(false);
+    await expect(registered.get("上桌 [tableId] [target:user]")!.action(admin,"a","onebot:target")).resolves.toContain("已加入");
+    await expect(registered.get("下桌 [tableId] [target:user]")!.action(admin,"a","onebot:target")).resolves.toContain("已离开");
+    expect(client.calls.filter(c=>c[0] === "mahjongByIdentity").map(c=>[c[1].subject,c[2],c[3]])).toEqual([
+      ["target","table-a","join"],["target","table-a","leave"],
+    ]);
+    client.bot = botConfig({mahjongTables:[mahjongTable],staff:[{provider:"onebot",subject:"admin"}],settings:{staffCommands:false}});
+    // A new instance fetches the changed config, as config.changed does in production.
+    const disabled = new Map<string, RegisteredCommand>();
+    applyPrismKoishiPlugin(createMockKoishiContext(disabled), {client:client as any});
+    await expect(disabled.get("上桌 [tableId] [target:user]")!.action(admin,"a","onebot:target")).resolves.toBe("员工命令未启用");
   });
 
   it("does not register legacy admin commands", () => {
@@ -1642,7 +1663,7 @@ describe("applyPrismKoishiPlugin", () => {
     // A bill or a wallet spans the shop, and a table has its own plan: these still reach the platform.
     await registered.get("wallet [target:user]")!.action(player);
     await registered.get("logout [target:user]")!.action(player);
-    await registered.get("上桌 [tableId]")!.action(player, "a");
+    await registered.get("上桌 [tableId] [target:user]")!.action(player, "a");
     expect(client.calls.map((call) => call[0]).filter((name) => name !== "getBotConfig").length).toBeGreaterThanOrEqual(3);
   });
 
@@ -1689,8 +1710,8 @@ it("sends every command as a request over one authenticated connection", async (
   }]);
   const sender = { session: { platform: "onebot", userId: "1234" } };
   expect(await registered.get("login [target:user]")!.action(sender)).toContain("入场成功");
-  expect(await registered.get("上桌 [tableId]")!.action(sender, "a")).toContain("麻将计费已开始");
-  expect(await registered.get("下桌 [tableId]")!.action(sender)).toContain("麻将计费已停止");
+  expect(await registered.get("上桌 [tableId] [target:user]")!.action(sender, "a")).toContain("麻将计费已开始");
+  expect(await registered.get("下桌 [tableId] [target:user]")!.action(sender)).toContain("麻将计费已停止");
   // Admission names no plan and no label: the shop's default plan is the platform's to know.
   const [start] = platform.requests().filter(frame => frame.path.endsWith("/session/start"));
   expect(start.body).toEqual({ identity: { provider: "onebot", subject: "1234" }, displayName: "1234", entry: true });
@@ -2144,7 +2165,7 @@ it("leaves read-only players lookups, binding and redeeming while staff keep eve
   const player = { session: { platform: "onebot", userId: "114514" } };
   const effects: [string, string[]][] = [
     ["login [target:user]", []], ["入场 [target:user]", []], ["logout [target:user]", []],
-    ["mahjong <tableId>", ["a"]], ["上桌 [tableId]", ["a"]], ["下桌 [tableId]", []],
+    ["mahjong <tableId> [target:user]", ["a"]], ["上桌 [tableId] [target:user]", ["a"]], ["下桌 [tableId] [target:user]", []],
     ["lock", []], ["on <deviceRef>", ["maimai"]], ["off <deviceRef>", ["maimai"]],
     ["coin <deviceRef> [count]", ["maimai"]], ["scan <deviceRef>", ["maimai"]],
   ];

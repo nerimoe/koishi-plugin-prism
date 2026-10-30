@@ -279,16 +279,19 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
     service.loginForTarget(await service.sender(context), target, context.session?.bot),
   entry));
 
-  ctx.command("mahjong <tableId>", "加入指定麻将桌").action(effect(async (context, tableId) =>
-    service.mahjongJoin(await service.sender(context), tableId),
+  ctx.command("mahjong <tableId> [target:user]", "加入指定麻将桌").action(effect(async (context, tableId, target) =>
+    service.withTarget(await service.sender(context), target, async (sender, targeted) =>
+      (targeted ? `玩家 ${formatPlayerReference(sender)}\n` : "") + await service.mahjongJoin(sender, tableId), context.session?.bot),
   ));
 
-  ctx.command("上桌 [tableId]", "加入指定麻将桌").action(effect(async (context, tableId) =>
-    service.mahjongJoin(await service.sender(context), tableId),
+  ctx.command("上桌 [tableId] [target:user]", "加入指定麻将桌").action(effect(async (context, tableId, target) =>
+    service.withTarget(await service.sender(context), target, async (sender, targeted) =>
+      (targeted ? `玩家 ${formatPlayerReference(sender)}\n` : "") + await service.mahjongJoin(sender, tableId), context.session?.bot),
   ));
 
-  ctx.command("下桌 [tableId]", "离开当前所在麻将桌").action(effect(async (context, tableId) =>
-    service.mahjongLeave(await service.sender(context), tableId),
+  ctx.command("下桌 [tableId] [target:user]", "离开当前所在麻将桌").action(effect(async (context, tableId, target) =>
+    service.withTarget(await service.sender(context), target, async (sender, targeted) =>
+      (targeted ? `玩家 ${formatPlayerReference(sender)}\n` : "") + await service.mahjongLeave(sender, tableId), context.session?.bot),
   ));
 
   ctx.command("麻将列表", "查看麻将机状态与别名").action(wrap(async () =>
@@ -1188,7 +1191,6 @@ class PrismKoishiService {
       if (!(error instanceof PrismBotClientError)) throw error;
       if (error.code === "MAHJONG_TABLE_NOT_FOUND") return `未找到麻将桌「${tableRef}」。可先使用 /麻将列表 查看可用桌位。`;
       if (error.code === "MAHJONG_TABLE_FULL") return `「${table.name}」已满桌，请等待本局结束后再上桌。`;
-      if (error.code === "MAHJONG_ALREADY_SEATED") return "你已经在另一张麻将桌上，请先 /下桌。";
       const message = platformMessage(error);
       if (message) return `上桌失败，${message}`;
       throw error;
