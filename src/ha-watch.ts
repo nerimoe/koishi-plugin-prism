@@ -3,7 +3,7 @@
  *
  * The platform hands a bot the Home Assistant addresses to try, a read-only token and the entities it
  * cares about (`ha.watch`). The bot subscribes with `subscribe_entities` and reports `ha.status` (also
- * every 30 s, as a heartbeat) and `ha.states` back over its platform connection, every report carrying
+ * every 60 s, as a heartbeat) and `ha.states` back over its platform connection, every report carrying
  * the term of the assignment it answers; that is how the platform tells a current watcher from a
  * replaced one. This is the same job a HINATA IO does, in the same shape, so the platform treats both
  * alike.
@@ -32,7 +32,9 @@ export type HaTiming = {
 export const HA_TIMING: HaTiming = {
   connectMs: 10_000,
   authMs: 10_000,
-  heartbeatMs: 30_000,
+  // The same beat as a machine's IO: the platform gives a watcher two beats of
+  // lease plus slack, and does not care whether the watcher is a bot or a box.
+  heartbeatMs: 60_000,
   firstRetryMs: 2_000,
   maxRetryMs: 60_000,
 };
