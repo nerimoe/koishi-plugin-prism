@@ -74,8 +74,12 @@ export type KoishiCommandBuilder = {
 export type KoishiLikeContext = {
   command(name: string, description: string): KoishiCommandBuilder;
   logger?(name: string): { warn(...args: unknown[]): void };
-  /** Send to channels as `platform:channelId`. */
-  broadcast?(channels: string[], content: string): Promise<unknown>;
+  bots?: Array<{
+    platform: string;
+    isActive: boolean;
+    sendMessage(channelId: string, content: string): Promise<unknown>;
+    sendPrivateMessage(userId: string, content: string): Promise<unknown>;
+  }>;
   on?(event: "dispose", listener: () => void): void;
 };
 
@@ -109,9 +113,9 @@ const COMMANDS: Array<[declaration: string, description: string]> = [
   ["prism.bind <code:string>", "绑定网页登录账号到当前平台身份（旧命令，同 bind）"],
   ["login [target:user]", "开启玩家计费场次"],
   ["入场 [target:user]", "入场"],
-  ["mahjong <tableId>", "加入指定麻将桌"],
-  ["上桌 [tableId]", "加入指定麻将桌"],
-  ["下桌 [tableId]", "离开当前所在麻将桌"],
+  ["mahjong <tableId> [target:user]", "加入指定麻将桌"],
+  ["上桌 [tableId] [target:user]", "加入指定麻将桌"],
+  ["下桌 [tableId] [target:user]", "离开当前所在麻将桌"],
   ["麻将列表", "查看麻将机状态与别名"],
   ["logout [target:user]", "结算玩家计费场次"],
   ["billing [target:user]", "预览玩家结账费用"],
@@ -567,13 +571,32 @@ class PrismKoishiService {
   /** Somewhere else than where the command was said: a private chat through the same bot, otherwise a channel. */
   private async deliver(to: string, text: string, context: KoishiActionContext): Promise<void> {
     if (to.startsWith("private:")) await context.session?.bot?.broadcast?.([to], text);
-    else await this.ctx.broadcast?.([to], text);
+    else await this.sendTo(to, text);
+  }
+
+  /**
+   * `platform:channel` or `platform:private:user`, through that platform's first
+   * online bot: this needs neither Koishi's channel database nor its broadcast list.
+   */
+  private async sendTo(target: string, text: string): Promise<void> {
+    try {
+      const separator = target.indexOf(":");
+      if (separator < 1 || separator === target.length - 1) throw new Error(`无效的播报频道：${target}`);
+      const platform = target.slice(0, separator), channel = target.slice(separator + 1);
+      if (channel === "private:") throw new Error(`无效的私聊目标：${target}`);
+      const bot = this.ctx.bots?.find((candidate) => candidate.platform === platform && candidate.isActive);
+      if (!bot) throw new Error(`没有可用的 ${platform} 机器人`);
+      if (channel.startsWith("private:")) await bot.sendPrivateMessage(channel.slice(8), text);
+      else await bot.sendMessage(channel, text);
+    } catch (error) {
+      this.logger?.warn(`PRiSM announcement to ${target} failed`, error);
+    }
   }
 
   /** The shop's news, said where the platform says. */
   private async announce(say: SayFrame): Promise<void> {
-    if (!say.to || typeof this.ctx.broadcast !== "function") return;
-    await this.ctx.broadcast([say.to], await this.render(say.message));
+    if (!say.to) return;
+    await this.sendTo(say.to, await this.render(say.message));
   }
 
   /**

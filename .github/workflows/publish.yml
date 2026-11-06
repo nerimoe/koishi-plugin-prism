@@ -59,6 +59,10 @@ jobs:
       - if: steps.release.outputs.publish == 'true'
         run: npm publish --access public
 
+      - name: Restore latest to 0.4.0
+        if: github.event_name == 'workflow_dispatch' && steps.release.outputs.version == '0.4.0'
+        run: npx --yes npm@11.21.0 dist-tag add koishi-plugin-prism@0.4.0 latest
+
       - name: Tag the release
         if: steps.release.outputs.publish == 'true' && github.ref_type != 'tag'
         env:

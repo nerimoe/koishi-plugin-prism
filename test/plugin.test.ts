@@ -17,6 +17,15 @@ function createMockKoishiContext(registered: Map<string, Action>, extra: Record<
   };
 }
 
+/** A platform's online bot, recording what it was told to send as a channel target. */
+function onlineBot(record: (target: string, content: string) => void) {
+  return { bots: [{
+    platform: "onebot", isActive: true,
+    async sendMessage(id: string, content: string) { record(`onebot:${id}`, content); },
+    async sendPrivateMessage(id: string, content: string) { record(`onebot:private:${id}`, content); },
+  }] };
+}
+
 type Say = { message: unknown[]; to?: string };
 type Reply = { status: number; body: unknown; serverMs?: number } | null;
 
@@ -92,7 +101,7 @@ describe("forwarding commands to the platform", () => {
     const { registered } = await connectedBot({});
     expect([...registered.keys()]).toEqual([
       "bind <code:string>", "prism.bind <code:string>", "login [target:user]", "入场 [target:user]",
-      "mahjong <tableId>", "上桌 [tableId]", "下桌 [tableId]", "麻将列表",
+      "mahjong <tableId> [target:user]", "上桌 [tableId] [target:user]", "下桌 [tableId] [target:user]", "麻将列表",
       "logout [target:user]", "billing [target:user]", "wallet [target:user]", "items [target:user]",
       "list [name:text]", "show [deviceId]", "history [target:user]", "lock",
       "on <deviceRef>", "off <deviceRef>", "keep <deviceRef>", "coin <deviceRef> [count]", "scan <deviceRef>",
@@ -149,7 +158,7 @@ describe("forwarding commands to the platform", () => {
     const { run } = await connectedBot(
       { commands: () => [said("✅ 退场成功"), { to: "private:9", ...said("✅ 退场成功") }, { to: "onebot:43", ...said("另一个群") }] },
       {},
-      { async broadcast(channels: string[], content: string) { delivered.push(["channel", channels, content]); } },
+      onlineBot((target, content) => delivered.push(["channel", [target], content])),
     );
     const session = { userId: "1", channelId: "42", bot: { async broadcast(channels: string[], content: string) { delivered.push(["private", channels, content]); } } };
     expect(await run("logout [target:user]", { session })).toBe("✅ 退场成功");
@@ -194,7 +203,7 @@ describe("the shop's news", () => {
     const { platform } = await connectedBot(
       {},
       { resolveDisplayName: (subject) => `Player ${subject}` },
-      { async broadcast(channels: string[], content: string) { broadcasts.push([channels, content]); } },
+      onlineBot((target, content) => broadcasts.push([[target], content])),
     );
     const alice = { playerId: "p1", displayName: "Alice", identities: [{ provider: "onebot", subject: "7" }] };
     platform.push({ type: "say", to: "onebot:42", message: [{ text: "🎮 " }, { player: alice }, { text: " 在 舞萌 上机" }] });
