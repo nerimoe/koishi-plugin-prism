@@ -105,9 +105,9 @@ Bot 设置开启「账单私聊店员」时，玩家退场或店员覆盖结账�
 * `麻将列表` - 查看店里麻将桌的桌名、别名，以及空闲、等位或游玩中状态。
 * `api测速 [次数]` - 走 HTTP 连续查询自己的钱包：首次（含建立连接）单独列出，之后显示最小、平均与最大延迟，并给出服务端处理时间和经过的 Cloudflare 节点（默认 5 次，最多 10 次）。
 * `ws测速 [次数]` - 走 Bot 的 WebSocket 连接：心跳往返（纯网络）和同样的钱包查询，并给出服务端处理时间（默认 5 次，最多 10 次）。两者对比可以看出延迟在网络还是在服务端，以及长连接能省下多少。
-* `versions` - 显示当前 Bot npm 包版本和后端发布版本；后端不可达时仍会显示 Bot 版本。
+* `versions` - 显示当前 Bot npm 包版本，以及后端是哪次部署（Worker 名称和提交号的前 12 位，如 `prism-link-beta (df66f121da54)`）；后端不可达时仍会显示 Bot 版本。
 
-Bot 版本直接读取本 npm 包的 `package.json`，后端版本读取无需认证的 `GET /version`。插件发布遵循 SemVer；修复使用 patch、兼容新增功能使用 minor、不兼容改动使用 major，发布前通过 `npm version <patch|minor|major>` 自动更新包版本。
+Bot 版本直接读取本 npm 包的 `package.json`，后端的部署读取无需认证的 `GET /version`（`{ worker, revision }`；后端没有发布版本号）。插件发布遵循 SemVer；修复使用 patch、兼容新增功能使用 minor、不兼容改动使用 major，发布前通过 `npm version <patch|minor|major>` 自动更新包版本。
 
 ### 店员快捷指令
 
@@ -169,6 +169,8 @@ npm version minor --no-git-tag-version
 ### 未发布
 
 插件改为只转发命令：`login`、`logout`、`wallet` 等命令连同参数原样发给平台（`command` 帧），平台执行、判断权限（只读模式、店员、计费）、写好回复，插件照发（`say` 帧）；账单私聊店员、入场附带的门锁密码也由平台决定发到哪。店内动态和闲置提醒同样由平台写好、按 Bot 设置的播报类型发到播报群，插件不再读取 Bot 设置，也不再收 `shop.event`。插件自己只保留 `versions`、`api测速`、`ws测速` 和 Home Assistant 监听。播报新增机台投币、开局扣币、投币计数清零（需要机台 IO 开启 `cabinetMonitor`），以及来自 Home Assistant 的开机、关机；刷卡改为在游戏取到卡时播报，网页刷卡和实体卡一样只说一次；`下桌` 不必再指定桌号。需要支持命令协议的 PRiSM，店铺所在的 PRiSM 升级之前不要升级到此版本。
+
+`versions` 按平台现在的 `GET /version` 显示后端：Worker 名称和提交号，不再有发布版本号。
 
 ### 0.5.2
 
