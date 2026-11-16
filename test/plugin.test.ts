@@ -215,9 +215,9 @@ describe("the shop's news", () => {
 });
 
 describe("the bot's own commands", () => {
-  it("asks the platform for its version, and keeps its own visible when it cannot", async () => {
-    const { run } = await connectedBot({ requests: (frame) => (frame.path === "version" ? { status: 200, body: { version: "1.0.0", revision: "abc123" } } : null) });
-    expect(await run("versions", { session: { userId: "1" } })).toBe(`PRiSM 版本信息\nBot：${version}\n后端：1.0.0 (abc123)`);
+  it("asks the platform which deployment answers, and keeps its own version visible when it cannot", async () => {
+    const { run } = await connectedBot({ requests: (frame) => (frame.path === "version" ? { status: 200, body: { worker: "prism-link-beta", revision: "df66f121da543488a71d6358b90b1fdc735fc494" } } : null) });
+    expect(await run("versions", { session: { userId: "1" } })).toBe(`PRiSM 版本信息\nBot：${version}\n后端：prism-link-beta (df66f121da54)`);
     const offline = await connectedBot({ requests: () => ({ status: 500, body: {} }) });
     expect(await offline.run("versions", { session: { userId: "1" } })).toBe(`PRiSM 版本信息\nBot：${version}\n后端：不可用`);
   });

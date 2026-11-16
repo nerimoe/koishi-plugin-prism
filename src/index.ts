@@ -153,7 +153,7 @@ export function applyPrismKoishiPlugin(ctx: KoishiLikeContext, config: PrismKois
   ctx.command("ws测速 [count:number]", "测试 Bot 走 WebSocket 到 PRiSM 的延迟").action(async (context, count) =>
     quoted(context, await service.benchmarkWs(context, count)));
   // The Bot's own version stays visible while the platform is out of reach.
-  ctx.command("versions", "查看 Bot 与 PRiSM 后端版本").action(async (context) =>
+  ctx.command("versions", "查看 Bot 版本与 PRiSM 后端的部署").action(async (context) =>
     quoted(context, await service.versions()));
 
   ctx.on?.("dispose", () => service.dispose());
@@ -635,9 +635,10 @@ class PrismKoishiService {
       const reply = await this.socket.request({ method: "GET", path: "version" });
       if (reply.status < 400) {
         const record = data(reply.body) ?? {};
-        const release = String(record.version ?? "").trim() || "unknown";
-        const revision = String(record.revision ?? "").trim();
-        backend = !revision || revision === "unknown" ? release : `${release} (${revision})`;
+        // The platform has no release number: it says which Worker answers and the commit it runs.
+        const worker = String(record.worker ?? "").trim() || "unknown";
+        const revision = String(record.revision ?? "").trim().slice(0, 12);
+        backend = revision ? `${worker} (${revision})` : worker;
       }
     } catch {
       // The Bot version remains useful when the backend is offline or too old.
