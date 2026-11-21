@@ -153,6 +153,37 @@ describe("forwarding commands to the platform", () => {
     expect(await run("billing [target:user]", { session: { userId: "1", channelId: "42" } })).toBe("玩家：群名片7。");
   });
 
+  it("says a player by the name the platform keeps for this chat's platform, before asking the chat", async () => {
+    const player = { playerId: "p", displayName: "Player 75", identities: [{ provider: "discord", subject: "d", name: "Dee" }, { provider: "onebot", subject: "7", name: "小七" }] };
+    const { run } = await connectedBot(
+      { commands: () => [{ message: [{ player }] }] },
+      { resolveDisplayName: () => "不会用到" },
+    );
+    expect(await run("billing [target:user]", { session: { userId: "1", channelId: "42" } })).toBe("小七");
+  });
+
+  it("reads the members of every group its bots are in and sends their nicknames to the platform", async () => {
+    const guilds = { data: [{ id: "g1" }, { id: "g2" }] };
+    const members: Record<string, Array<{ data: unknown[]; next?: string }>> = {
+      g1: [{ data: [{ user: { id: "1", name: "一号" }, nick: "群名片一" }], next: "p2" }, { data: [{ user: { id: "2", name: "二号" } }] }],
+      g2: [{ data: [{ user: { id: "1", name: "一号" } }, { user: { id: "3" } }] }],
+    };
+    const bot = {
+      platform: "onebot", isActive: true,
+      async sendMessage() {}, async sendPrivateMessage() {},
+      async getGuildList() { return guilds; },
+      async getGuildMemberList(id: string, next?: string) { return members[id]![next ? 1 : 0]!; },
+    };
+    const { platform } = await connectedBot({}, { nameSyncFirstMs: 0 }, { bots: [bot] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const names = platform.frames.filter((frame) => frame.type === "names");
+    // Their nickname, not a group card; each person once; nobody without a name.
+    expect(names).toEqual([{ type: "names", names: [
+      { provider: "onebot", subject: "1", name: "一号" },
+      { provider: "onebot", subject: "2", name: "二号" },
+    ] }]);
+  });
+
   it("answers with the first word for here, and sends the rest where the platform says", async () => {
     const delivered: unknown[] = [];
     const { run } = await connectedBot(

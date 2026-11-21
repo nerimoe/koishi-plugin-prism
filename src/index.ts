@@ -15,6 +15,7 @@ export const Config: Schema<PrismKoishiPluginConfig> = Schema.object({
   baseUrl: Schema.string().required().description("PRiSM 后端地址，例如 https://link.neri.moe"),
   shopCode: Schema.string().description("可选：店铺编号。接入凭据已经指明店铺，无需填写；旧配置仍认。"),
   integrationToken: Schema.string().role("secret").required().description("集成 API Token；其余设置在 PRiSM 商户工作台 → 资源 → 这个 Bot → Bot 设置"),
+  syncNames: Schema.boolean().default(true).description("定期读取 Bot 所在群的成员昵称，补全店里玩家的名字（只保留本店玩家）"),
 });
 
 export function apply(ctx: any, config: PrismKoishiPluginConfig): void {
@@ -49,6 +50,14 @@ export type PrismKoishiPluginConfig = {
   httpPost?: HttpPost;
   /** Opens connections to Home Assistant; defaults to Koishi's `ctx.http.ws`. Mainly for tests. */
   haSocket?: SocketFactory;
+  /**
+   * Read the members of every group the bots are in and tell the platform what
+   * each is called, so a shop's players get their chat names even when they
+   * never send the bot a command. On by default; `false` turns it off.
+   */
+  syncNames?: boolean;
+  /** When the first name read runs after starting; a minute by default. Mainly for tests. */
+  nameSyncFirstMs?: number;
 };
 
 /** A plain HTTP POST answering with its status, headers and decoded body. */
@@ -79,6 +88,9 @@ export type KoishiLikeContext = {
     isActive: boolean;
     sendMessage(channelId: string, content: string): Promise<unknown>;
     sendPrivateMessage(userId: string, content: string): Promise<unknown>;
+    /** Koishi's paged lists: the groups the bot is in, and a group's members. */
+    getGuildList?(next?: string): Promise<{ data: Array<{ id: string }>; next?: string }>;
+    getGuildMemberList?(guildId: string, next?: string): Promise<{ data: GuildMember[]; next?: string }>;
   }>;
   on?(event: "dispose", listener: () => void): void;
 };
@@ -170,8 +182,18 @@ const MAX_RETRY_MS = 30_000;
 const UNREACHABLE = "操作失败，暂时连不上服务器。";
 const TIMED_OUT = "服务器没有及时回应，请稍后确认结果";
 
-/** A player as the platform names one in what it says. */
-type MessagePlayer = { playerId: string; displayName: string | null; identities: Array<{ provider: string; subject: string }> };
+/** A player as the platform names one in what it says; `name` on an identity is what that platform calls them. */
+type MessagePlayer = { playerId: string; displayName: string | null; identities: Array<{ provider: string; subject: string; name?: string }> };
+
+/** A group member as a Koishi adapter lists one. */
+type GuildMember = { user?: { id?: string; name?: string; nick?: string }; nick?: string; name?: string };
+
+/** How often the bots' group members are read again for their names. */
+const NAME_SYNC_MS = 6 * 60 * 60_000;
+/** The first read waits for the connection to settle. */
+const NAME_SYNC_FIRST_MS = 60_000;
+/** Names per report; the platform takes at most 500. */
+const NAMES_PER_REPORT = 200;
 
 /**
  * What the platform writes for a bot to say (PRiSM's core `bot-message.ts`):
@@ -491,11 +513,51 @@ class PrismKoishiService {
       return { status: response.status, headers: response.headers, data: response.data };
     });
     this.socket.start();
+    this.scheduleNames(options.nameSyncFirstMs ?? NAME_SYNC_FIRST_MS);
   }
 
   dispose(): void {
+    if (this.nameTimer) clearTimeout(this.nameTimer);
     this.watcher?.stop();
     this.socket.stop();
+  }
+
+  private nameTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Read names now and then, from the first read on, unless turned off. */
+  private scheduleNames(delay: number): void {
+    if (this.options.syncNames === false) return;
+    this.nameTimer = setTimeout(() => {
+      void this.syncNames()
+        .catch((error) => this.logger?.warn("PRiSM name sync failed", error))
+        .finally(() => this.scheduleNames(NAME_SYNC_MS));
+    }, delay);
+  }
+
+  /**
+   * Every group each bot is in, member by member: what the platform calls them
+   * (their nickname, not a group card, which differs from group to group),
+   * sent to the platform in batches. The platform keeps the names of the
+   * shop's players among them and ignores everyone else.
+   */
+  async syncNames(): Promise<number> {
+    const names = new Map<string, { provider: string; subject: string; name: string }>();
+    for (const bot of this.ctx.bots ?? []) {
+      if (!bot.isActive || !bot.getGuildList || !bot.getGuildMemberList) continue;
+      const provider = String(bot.platform || "").toLowerCase();
+      if (!/^[a-z][a-z0-9_-]{0,63}$/.test(provider)) continue;
+      for await (const guild of pages((next) => bot.getGuildList!(next))) {
+        for await (const member of pages((next) => bot.getGuildMemberList!(guild.id, next))) {
+          const subject = String(member.user?.id ?? "").trim();
+          const name = String(member.user?.name || member.user?.nick || member.name || member.nick || "").trim();
+          if (subject && name) names.set(`${provider}:${subject}`, { provider, subject, name });
+        }
+      }
+    }
+    const list = [...names.values()];
+    for (let start = 0; start < list.length; start += NAMES_PER_REPORT)
+      this.socket.send({ type: "names", names: list.slice(start, start + NAMES_PER_REPORT) });
+    return list.length;
   }
 
   /* ----------------------------- commands -------------------------------- */
@@ -616,6 +678,9 @@ class PrismKoishiService {
   private async playerName(player: MessagePlayer, provider?: string): Promise<string> {
     const identities = Array.isArray(player.identities) ? player.identities : [];
     const identity = identities.find((candidate) => candidate.provider === provider) ?? identities[0];
+    // What this chat's platform calls them, as the platform keeps it for each identity.
+    const own = identities.find((candidate) => candidate.provider === provider && candidate.name);
+    if (own?.name) return own.name;
     if (identity && this.options.resolveDisplayName) {
       try {
         const name = await this.options.resolveDisplayName(identity.subject, identity.provider);
@@ -751,3 +816,19 @@ export default {
   ConfigSchema: Config,
   apply,
 };
+
+/** Every item of a Koishi paged list, page after page; a page that fails ends the list. */
+async function* pages<T>(read: (next?: string) => Promise<{ data: T[]; next?: string }>): AsyncGenerator<T> {
+  let next: string | undefined;
+  for (let page = 0; page < 1000; page++) {
+    let result: { data: T[]; next?: string };
+    try {
+      result = await read(next);
+    } catch {
+      return;
+    }
+    yield* result.data ?? [];
+    if (!result.next || result.next === next) return;
+    next = result.next;
+  }
+}
