@@ -114,7 +114,7 @@ describe("forwarding commands to the platform", () => {
   it("says hello as a bot that sends commands, over one authenticated connection", async () => {
     const { platform } = await connectedBot({});
     expect(platform.opened).toEqual([{ url: "wss://prism.test/integration/ws", headers: { Authorization: "Bearer test-token" } }]);
-    expect(platform.hellos()).toEqual([{ type: "hello", commands: 1 }]);
+    expect(platform.hellos()).toEqual([{ type: "hello", commands: 1, schedules: true }]);
     // The shop changed the bot's settings: hello again, so the platform rereads them.
     platform.push({ type: "config.changed" });
     expect(platform.hellos()).toHaveLength(2);
@@ -321,7 +321,7 @@ describe("watching Home Assistant for the shop", () => {
   it("says it can, so the platform may ask; the platform decides", async () => {
     const home = fakeHomeAssistant();
     const { platform } = await connectedBot({}, { haSocket: home.factory });
-    expect(platform.hellos()).toEqual([{ type: "hello", commands: 1, ha: true }]);
+    expect(platform.hellos()).toEqual([{ type: "hello", commands: 1, schedules: true, ha: true }]);
     platform.push({ type: "ha.watch", watch });
     expect(home.opened).toHaveLength(1);
   });

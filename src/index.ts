@@ -218,6 +218,8 @@ type SocketReply = { status: number; body: any; serverMs?: number | null };
  * `say` frames naming none. While it is down a command fails at once:
  * queueing a checkout or a top-up to run later would make players repeat it.
  */
+type Schedule = { id: string; text: string; time: string; to: string[]; date?: string; weekdays?: number[] };
+
 export class PrismSocket {
   private socket: SocketLike | null = null;
   private readonly pending = new Map<string, { resolve(value: SocketReply): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
@@ -227,6 +229,8 @@ export class PrismSocket {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private lastHeard = 0;
+  private scheduleTimer?: ReturnType<typeof setTimeout>;
+  private readonly sentDate = new Map<string, string>();
   private stopped = false;
   private sequence = 0;
   private readonly pongWaiters: Array<() => void> = [];
@@ -265,6 +269,7 @@ export class PrismSocket {
 
   stop(): void {
     this.stopped = true;
+    clearTimeout(this.scheduleTimer);
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.socket?.close(1000, "dispose");
@@ -293,10 +298,11 @@ export class PrismSocket {
         else if (socket.readyState === SOCKET_OPEN) socket.send("ping");
       }, PING_MS);
     });
-    socket.addEventListener("message", (event) => this.receive(String(event?.data ?? "")));
+    socket.addEventListener("message", (event) => { if (this.socket === socket) this.receive(String(event?.data ?? "")); });
     socket.addEventListener("close", () => {
       if (this.socket !== socket) return;
       this.socket = null;
+      clearTimeout(this.scheduleTimer);
       if (this.pingTimer) clearInterval(this.pingTimer);
       this.failPending();
       // The platform forgets what this bot watches with the connection; it is asked again after hello.
@@ -308,7 +314,8 @@ export class PrismSocket {
 
   /** Hello: on connecting, and again when the platform says the bot's settings changed, so it rereads them. */
   private greet(): void {
-    this.send({ type: "hello", commands: 1, ...this.hello() });
+    clearTimeout(this.scheduleTimer);
+    this.send({ type: "hello", commands: 1, schedules: true, ...this.hello() });
   }
 
   private reconnectLater(): void {
@@ -328,6 +335,31 @@ export class PrismSocket {
     this.listening.clear();
   }
 
+  private schedule(rules: Schedule[], timeZone: string): void {
+    clearTimeout(this.scheduleTimer);
+    const active = new Set(rules.map(rule => rule.id));
+    for (const id of this.sentDate.keys()) if (!active.has(id)) this.sentDate.delete(id);
+    if (!rules.length) return;
+    const clock = new Intl.DateTimeFormat("en-CA", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      hourCycle: "h23", hour: "2-digit", minute: "2-digit",
+    });
+    const tick = () => {
+      const parts = Object.fromEntries(clock.formatToParts(Date.now()).map(part => [part.type, part.value]));
+      const date = `${parts.year}-${parts.month}-${parts.day}`;
+      const weekday = new Date(date + "T00:00:00Z").getUTCDay();
+      for (const rule of rules) {
+        if (rule.time !== `${parts.hour}:${parts.minute}` || (rule.date && rule.date !== date)
+          || (rule.weekdays && !rule.weekdays.includes(weekday)) || this.sentDate.get(rule.id) === date) continue;
+        this.sentDate.set(rule.id, date);
+        for (const to of rule.to) this.onNews({ type: "say", to, message: [{ text: rule.text }] });
+      }
+      arm();
+    };
+    const arm = () => { this.scheduleTimer = setTimeout(tick, 60000 - Date.now() % 60000); };
+    arm();
+  }
+
   private receive(raw: string): void {
     this.lastHeard = Date.now();
     if (raw === "pong") {
@@ -338,6 +370,10 @@ export class PrismSocket {
     try {
       frame = JSON.parse(raw);
     } catch {
+      return;
+    }
+    if (frame?.type === "schedules" && Array.isArray(frame.rules)) {
+      this.schedule(frame.rules, frame.timeZone);
       return;
     }
     if (frame?.type === "say" && Array.isArray(frame.message)) {
