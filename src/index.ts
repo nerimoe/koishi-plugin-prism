@@ -143,7 +143,8 @@ const COMMANDS: Array<[declaration: string, description: string]> = [
   ["coin <deviceRef> [count]", "请求向指定设备投币"],
   ["scan <deviceRef>", "使用当前玩家绑定的 Aime 卡刷卡"],
   ["redeem <code>", "兑换 PRiSM 礼物码"],
-  ["add <target:user> <amount:number>", "增加玩家余额"],
+  ["add <target:user> <free:number> [paid:number]", "增加玩家余额"],
+  ["addx <target:user> <amount:number>", "增加玩家付费余额"],
   ["del <target:user> <amount:number>", "扣除玩家余额"],
   ["overwrite <target:user> <amount:number> [reason:text]", "覆盖结账金额并立即结账"],
 ];
