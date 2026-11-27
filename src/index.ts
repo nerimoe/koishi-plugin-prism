@@ -218,7 +218,7 @@ type SocketReply = { status: number; body: any; serverMs?: number | null };
  * `say` frames naming none. While it is down a command fails at once:
  * queueing a checkout or a top-up to run later would make players repeat it.
  */
-type Schedule = { id: string; text: string; time: string; to: string[]; date?: string; weekdays?: number[] };
+type Schedule = { id: string; text: string; time: string; additionalTimes?: string[]; to: string[]; date?: string; weekdays?: number[] };
 
 export class PrismSocket {
   private socket: SocketLike | null = null;
@@ -230,6 +230,7 @@ export class PrismSocket {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private lastHeard = 0;
   private scheduleTimer?: ReturnType<typeof setTimeout>;
+  private readonly pendingDeliveries = new Map<string, { date: string; timer?: ReturnType<typeof setTimeout> }>();
   private readonly sentDate = new Map<string, string>();
   private stopped = false;
   private sequence = 0;
@@ -242,7 +243,7 @@ export class PrismSocket {
     /** What to say in hello besides that this bot sends commands. */
     private readonly hello: () => Record<string, unknown>,
     /** The shop's news: something to say that answers no command. */
-    private readonly onNews: (say: SayFrame) => void,
+    private readonly onNews: (say: SayFrame) => boolean | Promise<boolean>,
     private readonly logger?: { warn(...args: unknown[]): void },
     /**
      * `onWatch`: the platform asked this bot to watch Home Assistant, or with null to stop.
@@ -269,7 +270,7 @@ export class PrismSocket {
 
   stop(): void {
     this.stopped = true;
-    clearTimeout(this.scheduleTimer);
+    this.stopSchedules();
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.pingTimer) clearInterval(this.pingTimer);
     this.socket?.close(1000, "dispose");
@@ -302,7 +303,7 @@ export class PrismSocket {
     socket.addEventListener("close", () => {
       if (this.socket !== socket) return;
       this.socket = null;
-      clearTimeout(this.scheduleTimer);
+      this.stopSchedules();
       if (this.pingTimer) clearInterval(this.pingTimer);
       this.failPending();
       // The platform forgets what this bot watches with the connection; it is asked again after hello.
@@ -335,10 +336,49 @@ export class PrismSocket {
     this.listening.clear();
   }
 
+  private cancelDelivery(key: string): void {
+    clearTimeout(this.pendingDeliveries.get(key)?.timer);
+    this.pendingDeliveries.delete(key);
+  }
+
+  private stopSchedules(): void {
+    clearTimeout(this.scheduleTimer);
+    for (const key of this.pendingDeliveries.keys()) this.cancelDelivery(key);
+  }
+
+  private sendScheduled(rule: Schedule, to: string, date: string, time: string): void {
+    const key = JSON.stringify([rule.id, to, time]);
+    if (this.sentDate.get(key) === date || this.pendingDeliveries.get(key)?.date === date) return;
+    const pending: { date: string; timer?: ReturnType<typeof setTimeout> } = { date };
+    this.pendingDeliveries.set(key, pending);
+    const attempt = async (retry: boolean) => {
+      let delivered = false;
+      try {
+        delivered = await this.onNews({ type: "say", to, message: [{ text: rule.text }] });
+      } catch (error) {
+        this.logger?.warn(`PRiSM announcement to ${to} failed`, error);
+      }
+      if (this.pendingDeliveries.get(key) !== pending) return;
+      if (delivered || retry) {
+        this.sentDate.set(key, date);
+        this.pendingDeliveries.delete(key);
+      } else {
+        pending.timer = setTimeout(() => void attempt(true), 60_000);
+      }
+    };
+    void attempt(false);
+  }
+
   private schedule(rules: Schedule[], timeZone: string): void {
     clearTimeout(this.scheduleTimer);
-    const active = new Set(rules.map(rule => rule.id));
-    for (const id of this.sentDate.keys()) if (!active.has(id)) this.sentDate.delete(id);
+    const active = new Map(rules.map(rule => [rule.id, rule]));
+    const stillScheduled = (key: string) => {
+      const [id, to, time] = JSON.parse(key) as [string, string, string];
+      const rule = active.get(id);
+      return rule?.to.includes(to) && (rule.time === time || rule.additionalTimes?.includes(time));
+    };
+    for (const key of this.pendingDeliveries.keys()) if (!stillScheduled(key)) this.cancelDelivery(key);
+    for (const key of this.sentDate.keys()) if (!stillScheduled(key)) this.sentDate.delete(key);
     if (!rules.length) return;
     const clock = new Intl.DateTimeFormat("en-CA", {
       timeZone, year: "numeric", month: "2-digit", day: "2-digit",
@@ -348,11 +388,11 @@ export class PrismSocket {
       const parts = Object.fromEntries(clock.formatToParts(Date.now()).map(part => [part.type, part.value]));
       const date = `${parts.year}-${parts.month}-${parts.day}`;
       const weekday = new Date(date + "T00:00:00Z").getUTCDay();
+      const time = `${parts.hour}:${parts.minute}`;
       for (const rule of rules) {
-        if (rule.time !== `${parts.hour}:${parts.minute}` || (rule.date && rule.date !== date)
-          || (rule.weekdays && !rule.weekdays.includes(weekday)) || this.sentDate.get(rule.id) === date) continue;
-        this.sentDate.set(rule.id, date);
-        for (const to of rule.to) this.onNews({ type: "say", to, message: [{ text: rule.text }] });
+        if ((rule.time !== time && !rule.additionalTimes?.includes(time)) || (rule.date && rule.date !== date)
+          || (rule.weekdays && !rule.weekdays.includes(weekday))) continue;
+        for (const to of rule.to) this.sendScheduled(rule, to, date, time);
       }
       arm();
     };
@@ -531,9 +571,12 @@ class PrismKoishiService {
       // Saying it can watch is what makes the platform consider this bot; the platform decides.
       () => (this.watcher ? { ha: true } : {}),
       (say) => {
-        this.announcing = this.announcing
-          .then(() => this.announce(say))
-          .catch((error) => this.logger?.warn("PRiSM announcement failed", error));
+        const delivery = this.announcing.then(() => this.announce(say)).catch(error => {
+          this.logger?.warn("PRiSM announcement failed", error);
+          return false;
+        });
+        this.announcing = delivery.then(() => {});
+        return delivery;
       },
       this.logger,
       this.watcher
@@ -676,7 +719,7 @@ class PrismKoishiService {
    * `platform:channel` or `platform:private:user`, through that platform's first
    * online bot: this needs neither Koishi's channel database nor its broadcast list.
    */
-  private async sendTo(target: string, text: string): Promise<void> {
+  private async sendTo(target: string, text: string): Promise<boolean> {
     try {
       const separator = target.indexOf(":");
       if (separator < 1 || separator === target.length - 1) throw new Error(`无效的播报频道：${target}`);
@@ -686,15 +729,17 @@ class PrismKoishiService {
       if (!bot) throw new Error(`没有可用的 ${platform} 机器人`);
       if (channel.startsWith("private:")) await bot.sendPrivateMessage(channel.slice(8), text);
       else await bot.sendMessage(channel, text);
+      return true;
     } catch (error) {
       this.logger?.warn(`PRiSM announcement to ${target} failed`, error);
+      return false;
     }
   }
 
   /** The shop's news, said where the platform says. */
-  private async announce(say: SayFrame): Promise<void> {
-    if (!say.to) return;
-    await this.sendTo(say.to, await this.render(say.message));
+  private async announce(say: SayFrame): Promise<boolean> {
+    if (!say.to) return false;
+    return this.sendTo(say.to, await this.render(say.message));
   }
 
   /**
