@@ -105,8 +105,8 @@ describe("forwarding commands to the platform", () => {
       "logout [target:user]", "billing [target:user]", "wallet [target:user]", "items [target:user]",
       "list [name:text]", "show [deviceId]", "history [target:user]", "lock",
       "on <deviceRef>", "off <deviceRef>", "keep <deviceRef>", "coin <deviceRef> [count]", "scan <deviceRef>",
-      "redeem <code>", "add <target:user> <amount:number>", "del <target:user> <amount:number>",
-      "overwrite <target:user> <amount:number> [reason:text]",
+      "redeem <code>", "add <target:user> <free:number> [paid:number]", "addx <target:user> <amount:number>",
+      "del <target:user> <amount:number>", "overwrite <target:user> <amount:number> [reason:text]",
       "api测速 [count:number]", "ws测速 [count:number]", "versions",
     ]);
   });
@@ -135,10 +135,14 @@ describe("forwarding commands to the platform", () => {
   it("sends whom a command is for apart from its arguments, and leaves who may to the platform", async () => {
     const { platform, run } = await connectedBot({ commands: () => [said("ok")] });
     const session = { userId: "1", channelId: "42", bot: { async getUser(id: string) { return { name: `用户${id}` }; } } };
-    await run("add <target:user> <amount:number>", { session }, "onebot:2", 5);
+    await run("add <target:user> <free:number> [paid:number]", { session }, "onebot:2", 5);
+    await run("add <target:user> <free:number> [paid:number]", { session }, "onebot:2", 5, 10);
+    await run("addx <target:user> <amount:number>", { session }, "onebot:2", 15);
     await run("wallet [target:user]", { session });
-    const [add, wallet] = platform.commands();
-    expect(add).toMatchObject({ name: "add", args: ["5"], target: { provider: "onebot", subject: "2", name: "用户2" } });
+    const [addFree, addBoth, addPaid, wallet] = platform.commands();
+    expect(addFree).toMatchObject({ name: "add", args: ["5"], target: { provider: "onebot", subject: "2", name: "用户2" } });
+    expect(addBoth).toMatchObject({ name: "add", args: ["5", "10"], target: { provider: "onebot", subject: "2", name: "用户2" } });
+    expect(addPaid).toMatchObject({ name: "addx", args: ["15"], target: { provider: "onebot", subject: "2", name: "用户2" } });
     expect(wallet).toMatchObject({ name: "wallet", args: [] });
     expect(wallet.target).toBeUndefined();
   });
