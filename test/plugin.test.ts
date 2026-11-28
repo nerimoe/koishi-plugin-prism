@@ -150,11 +150,11 @@ describe("forwarding commands to the platform", () => {
   it("names players as this chat knows them", async () => {
     const player = { playerId: "p", displayName: "平台名", identities: [{ provider: "discord", subject: "d" }, { provider: "onebot", subject: "7" }] };
     const { run } = await connectedBot(
-      { commands: () => [{ message: [{ text: "玩家：" }, { player }, { image: "x" }, { text: "。" }] }] },
+      { commands: () => [{ message: [{ text: "玩家：" }, { player }, { sticker: "y" }, { image: "x" }, { text: "。" }] }] },
       { resolveDisplayName: (subject, provider) => (provider === "onebot" ? `群名片${subject}` : null) },
     );
-    // A segment this version does not know is left out.
-    expect(await run("billing [target:user]", { session: { userId: "1", channelId: "42" } })).toBe("玩家：群名片7。");
+    // A picture is sent as one; a segment this version does not know is left out.
+    expect(await run("billing [target:user]", { session: { userId: "1", channelId: "42" } })).toBe('玩家：群名片7<img src="x"/>。');
   });
 
   it("says a player by the name the platform keeps for this chat's platform, before asking the chat", async () => {

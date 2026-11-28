@@ -201,7 +201,7 @@ const NAMES_PER_REPORT = 200;
  * text, and players the bot names as its chat knows them. A segment of a kind
  * this version does not know is said by its `text`, if it has one.
  */
-type BotMessage = Array<{ text?: string; player?: MessagePlayer }>;
+type BotMessage = Array<{ text?: string; player?: MessagePlayer; image?: string }>;
 
 /** `say`: something to say, the answer to a command (`replyTo`) or the shop's news. */
 export type SayFrame = { type: "say"; message: BotMessage; replyTo?: string; to?: string; done?: boolean };
@@ -753,6 +753,7 @@ class PrismKoishiService {
       const player = segment?.player;
       if (player && typeof player.playerId === "string") parts.push(await this.playerName(player, provider));
       else if (typeof segment?.text === "string") parts.push(segment.text);
+      else if (typeof segment?.image === "string") parts.push(h.image(segment.image).toString());
     }
     return parts.join("");
   }
